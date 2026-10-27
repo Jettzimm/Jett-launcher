@@ -213,11 +213,19 @@ object Config {
         PowerOnRule("gameday", DayOfWeek.SATURDAY, 9, 12, "College GameDay", "ESPN"),
     )
 
-    // Sunday NFL: RedZone from this time until the afternoon games finish,
-    // then the primetime game's channel. Switches even if you're inside another app.
+    // NFL auto-switch (switches even if you're inside another app, with the 10-second countdown):
+    // - Sundays: RedZone from 1pm while the afternoon games are on, then the night game's channel.
+    // - Any night game (Thursday, Sunday, Monday, and late-season Saturdays/holidays): its channel
+    //   shortly before kickoff, or straight away if you turn the TV on during it.
+    // - Every playoff game, any day, including the Super Bowl.
     val NFL_SUNDAY = DayOfWeek.SUNDAY
     const val REDZONE_START_HOUR = 13
     const val REDZONE_CHANNEL = "NFL RedZone"
-    // Primetime switch only happens before this hour (so it doesn't fire at 1am).
-    const val PRIMETIME_CUTOFF_HOUR = 23
+    // A game kicking off at or after this hour (Eastern) counts as a night game.
+    const val NIGHT_GAME_HOUR = 18
+    // How early before kickoff to switch: night games / playoff games.
+    const val NIGHT_SWITCH_MINUTES_BEFORE = 15L
+    const val PLAYOFF_SWITCH_MINUTES_BEFORE = 30L
+    // Daily check time (Eastern) for whether today has any of the above.
+    const val NFL_DAILY_CHECK_HOUR = 12
 }

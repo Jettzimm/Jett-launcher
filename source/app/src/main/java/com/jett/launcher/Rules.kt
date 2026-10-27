@@ -39,60 +39,74 @@ object Rules {
                 return AutoTarget(r.id, r.title, r.channel)
             }
         }
-        return sundayTarget(now)
+        return nflTarget(now)
     }
 
-    /** RedZone while afternoon games are on, then the primetime game's channel. */
-    fun sundayTarget(now: ZonedDateTime): AutoTarget? {
-        if (now.dayOfWeek != Config.NFL_SUNDAY) return null
-        if (now.hour < Config.REDZONE_START_HOUR || now.hour >= Config.PRIMETIME_CUTOFF_HOUR) return null
+    /** Today's NFL games (Eastern date), or null if ESPN couldn't be reached. */
+    fun nflGamesToday(now: ZonedDateTime): List<Game>? {
         val nfl = Config.LEAGUES.first { it.key == "nfl" }
         val games = try { Sports.fetchLeague(nfl, DATE.format(now.toLocalDate())) } catch (e: Exception) { return null }
-        val today = games.filter { it.start.atZone(ZONE).toLocalDate() == now.toLocalDate() }
-        val afternoon = today.filter { it.start.atZone(ZONE).hour in 12..17 }
-        val primetime = today.filter { it.start.atZone(ZONE).hour >= 18 }.minByOrNull { it.start }
+        return games.filter { it.start.atZone(ZONE).toLocalDate() == now.toLocalDate() }
+    }
 
-        // Playoff / Super Bowl Sundays (no RedZone): follow each game on its own channel,
-        // whatever time it kicks off (incl. 6:30pm playoff and Super Bowl starts).
+    private fun isNight(g: Game) = g.start.atZone(ZONE).hour >= Config.NIGHT_GAME_HOUR
+    private fun isSundayAfternoon(g: Game) =
+        g.start.atZone(ZONE).dayOfWeek == Config.NFL_SUNDAY && g.start.atZone(ZONE).hour in 12..17
+
+    /** Games today that can trigger a switch: playoffs, Sunday afternoon (RedZone), night games. */
+    fun watched(today: List<Game>) = today.filter { it.seasonType == 3 || isNight(it) || isSundayAfternoon(it) }
+
+    private fun channelOf(g: Game, default: String) = Router.normalize(g.nationalNetworks.firstOrNull() ?: default)
+
+    /**
+     * What the NFL rules want on right now, or null.
+     * Playoffs: each game on its own channel. Sundays: RedZone, then the night game.
+     * Thursday / Monday / any other night game: its channel from just before kickoff.
+     */
+    fun nflTarget(now: ZonedDateTime, gamesToday: List<Game>? = null): AutoTarget? {
+        val today = gamesToday ?: nflGamesToday(now) ?: return null
+        val nowI = now.toInstant()
+        fun startsWithin(g: Game, minutes: Long) = g.state == "in" || (g.state == "pre" && g.start.isBefore(nowI.plusSeconds(minutes * 60)))
+
+        // Playoff days (no RedZone): follow each game, earliest live one first.
         if (today.any { it.seasonType == 3 }) {
-            // Live now, or kicking off within 90 minutes (don't switch hours early).
-            val soon = now.toInstant().plusSeconds(90 * 60L)
-            val g = today.filter { it.state == "in" || (it.state == "pre" && it.start.isBefore(soon)) }
+            val g = today.filter { it.seasonType == 3 && startsWithin(it, Config.PLAYOFF_SWITCH_MINUTES_BEFORE) }
                 .minByOrNull { it.start } ?: return null
-            val ch = Router.normalize(g.nationalNetworks.firstOrNull() ?: "CBS")
+            val ch = channelOf(g, "CBS")
             return AutoTarget("playoff_${g.id}", "${g.awayAbbr} @ ${g.homeAbbr} on $ch", ch)
         }
-        val liveAfternoon = afternoon.filter { it.state != "post" }
-        if (liveAfternoon.isNotEmpty()) return AutoTarget("redzone", "NFL RedZone", Config.REDZONE_CHANNEL)
-        if (primetime != null && primetime.state != "post") {
-            val channel = Router.normalize(primetime.nationalNetworks.firstOrNull() ?: "NBC")
-            return AutoTarget("primetime", "${primetime.awayAbbr} @ ${primetime.homeAbbr} on $channel", channel)
-        }
-        return null
+        // Sunday afternoon: RedZone while any afternoon game is still on.
+        if (now.dayOfWeek == Config.NFL_SUNDAY && now.hour >= Config.REDZONE_START_HOUR &&
+            today.any { isSundayAfternoon(it) && it.state != "post" }
+        ) return AutoTarget("redzone", "NFL RedZone", Config.REDZONE_CHANNEL)
+
+        // Night game. Sundays switch as soon as RedZone ends (the pregame show); other nights just
+        // before kickoff. Same id all night, so a Monday doubleheader doesn't yank you to game 2.
+        val night = today.filter { isNight(it) && it.state != "post" }
+        val g = (if (now.dayOfWeek == Config.NFL_SUNDAY && now.hour >= Config.REDZONE_START_HOUR) night
+                 else night.filter { startsWithin(it, Config.NIGHT_SWITCH_MINUTES_BEFORE) })
+            .minByOrNull { it.start } ?: return null
+        val ch = channelOf(g, "NBC")
+        return AutoTarget("night", "${g.awayAbbr} @ ${g.homeAbbr} on $ch", ch)
     }
 
     // ------------------------------------------------------------- alarms
-    const val ACTION_SUNDAY_CHECK = "com.jett.launcher.SUNDAY_CHECK"
+    const val ACTION_NFL_CHECK = "com.jett.launcher.NFL_CHECK"
 
-    /** Next Sunday 1pm (exact). Called on launcher start and boot. */
-    fun scheduleNextSunday(ctx: Context) {
-        val now = ZonedDateTime.now(ZONE)
-        var next = now.with(TemporalAdjusters.nextOrSame(Config.NFL_SUNDAY))
-            .withHour(Config.REDZONE_START_HOUR).withMinute(0).withSecond(0).withNano(0)
-        if (!next.isAfter(now)) {
-            // Already past 1pm Sunday: if still in the window, poll; else next week.
-            if (now.dayOfWeek == Config.NFL_SUNDAY && now.hour < Config.PRIMETIME_CUTOFF_HOUR) {
-                schedule(ctx, now.plusMinutes(5)); return
-            }
-            next = next.plusWeeks(1)
-        }
+    /** Re-plans the NFL checks (called on launcher start and boot): one check in a minute. */
+    fun scheduleNflCheck(ctx: Context) = schedule(ctx, ZonedDateTime.now(ZONE).plusMinutes(1))
+
+    /** Tomorrow's (or today's, if still ahead) daily check. */
+    fun scheduleDailyCheck(ctx: Context, now: ZonedDateTime) {
+        var next = now.withHour(Config.NFL_DAILY_CHECK_HOUR).withMinute(0).withSecond(0).withNano(0)
+        if (!next.isAfter(now)) next = next.plusDays(1)
         schedule(ctx, next)
     }
 
     fun schedule(ctx: Context, at: ZonedDateTime) {
         val am = ctx.getSystemService(AlarmManager::class.java)
         val pi = PendingIntent.getBroadcast(
-            ctx, 1, Intent(ctx, RuleReceiver::class.java).setAction(ACTION_SUNDAY_CHECK),
+            ctx, 1, Intent(ctx, RuleReceiver::class.java).setAction(ACTION_NFL_CHECK),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val t = at.toInstant().toEpochMilli()
@@ -126,28 +140,36 @@ object Rules {
     }
 }
 
-/** Fires at Sunday 1pm, then every 5 minutes until the primetime switch is done. */
+/**
+ * NFL checks: once a day at noon; on days with watched games, every 5 minutes from shortly
+ * before the first kickoff until the last watched game ends. Off days cost one small request.
+ */
 class RuleReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
-        if (intent.action != Rules.ACTION_SUNDAY_CHECK && intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        if (intent.action != Rules.ACTION_NFL_CHECK && intent.action != Intent.ACTION_BOOT_COMPLETED) return
         val pending = goAsync()
         Thread {
+            val now = ZonedDateTime.now(Config.ZONE)
             try {
-                val now = ZonedDateTime.now(Config.ZONE)
-                val target = Rules.sundayTarget(now)
+                val today = Rules.nflGamesToday(now)
+                if (today == null) {   // offline: try again soon
+                    Rules.schedule(ctx, now.plusMinutes(10)); return@Thread
+                }
+                val target = Rules.nflTarget(now, today)
                 val awake = ctx.getSystemService(PowerManager::class.java).isInteractive
                 if (target != null && awake && !Rules.alreadyDone(ctx, target, Rules.today())) {
                     Rules.markDone(ctx, target, Rules.today())
                     Handler(Looper.getMainLooper()).post { Rules.showCountdown(ctx, target) }
                 }
-                // Keep polling during the Sunday window (cheap: one small request every 5 min).
-                if (now.dayOfWeek == Config.NFL_SUNDAY && now.hour >= Config.REDZONE_START_HOUR &&
-                    now.hour < Config.PRIMETIME_CUTOFF_HOUR
-                ) {
-                    Rules.schedule(ctx, now.plusMinutes(5))
-                } else {
-                    Rules.scheduleNextSunday(ctx)
-                }
+                val left = Rules.watched(today).filter { it.state != "post" }
+                if (left.isEmpty()) { Rules.scheduleDailyCheck(ctx, now); return@Thread }
+                // Poll every 5 min while something's live; otherwise wake ~40 min before the next kickoff.
+                val soon = now.plusMinutes(5)
+                val nextKick = left.filter { it.state == "pre" }.minOfOrNull { it.start }?.atZone(Config.ZONE)?.minusMinutes(40)
+                val live = left.any { it.state == "in" } || (now.dayOfWeek == Config.NFL_SUNDAY && now.hour >= Config.REDZONE_START_HOUR)
+                Rules.schedule(ctx, if (live || nextKick == null || nextKick.isBefore(soon)) soon else nextKick)
+            } catch (e: Exception) {
+                Rules.schedule(ctx, now.plusMinutes(10))
             } finally { pending.finish() }
         }.start()
     }

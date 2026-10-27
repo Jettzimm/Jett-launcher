@@ -65,7 +65,7 @@ class MainActivity : Activity() {
         dp = resources.displayMetrics.density
         setContentView(buildUi())
         registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_ON))
-        Rules.scheduleNextSunday(this)
+        Rules.scheduleNflCheck(this)
         WindowAlarm.scheduleNext(this)
         Updater.scheduleDaily(this)
         // Only a real boot counts as a power-on — not a restart after an update or Home press.

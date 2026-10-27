@@ -112,7 +112,7 @@ feed (no reinstall needed).
 - `PhotoLibrary.kt` — mirrors the online photo library to the box.
 - `JettApp.kt` — TV on/off listener (power-on rules, update install).
 - `Sleep.kt` — bedroom sleep timer.
-- `Rules.kt` — Saturday GameDay, Sunday RedZone → primetime, the 10-second countdown.
+- `Rules.kt` — Saturday GameDay; NFL auto-switch: Sunday RedZone, every night game (Thu/Sun/Mon), every playoff game; the 10-second countdown.
 - `Sky.kt` — sunrise/sunset maths and the photo background (cross-fades every 3 minutes).
   Photos live in `app/src/main/assets/bg/{dawn,morning,midday,golden,dusk,night}/`; add or delete
   .webp files to change the built-in starter set (179). The full library is online (see Updates).

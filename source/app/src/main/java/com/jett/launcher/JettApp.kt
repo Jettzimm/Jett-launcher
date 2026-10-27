@@ -33,13 +33,10 @@ class JettApp : Application() {
     }
 }
 
-/** On each TV power-on: Saturday GameDay, Sunday RedZone / primetime. */
-private fun needsNetworkRetry(): Boolean {
-    val now = java.time.ZonedDateTime.now(Config.ZONE)
-    return now.dayOfWeek == Config.NFL_SUNDAY && now.hour >= Config.REDZONE_START_HOUR &&
-        now.hour < Config.PRIMETIME_CUTOFF_HOUR
-}
+/** Power-on checks that need ESPN get a few retries while Wi-Fi reconnects (afternoons/evenings). */
+private fun needsNetworkRetry(): Boolean = java.time.ZonedDateTime.now(Config.ZONE).hour >= 12
 
+/** On each TV power-on: Saturday GameDay, Sunday RedZone, night games, playoffs. */
 object PowerOn {
     @Volatile private var lastHandled = 0L
 

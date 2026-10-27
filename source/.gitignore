@@ -1,0 +1,7 @@
+jett.keystore
+keystore.properties
+local.properties
+build/
+app/build/
+.gradle/
+out/

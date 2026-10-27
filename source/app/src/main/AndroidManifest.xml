@@ -42,6 +42,7 @@
         android:banner="@drawable/banner"
         android:icon="@drawable/banner"
         android:theme="@style/LauncherTheme"
+        android:largeHeap="true"
         android:usesCleartextTraffic="false">
 
         <activity

@@ -1,9 +1,9 @@
 {
-  "versionCode": 15,
-  "versionName": "2.4",
-  "apk": "https://raw.githubusercontent.com/Jettzimm/jett-launcher/main/apk/JettLauncher-15.apk",
+  "versionCode": 16,
+  "versionName": "2.5",
+  "apk": "https://raw.githubusercontent.com/Jettzimm/jett-launcher/main/apk/JettLauncher-16.apk",
   "photos": "https://raw.githubusercontent.com/Jettzimm/jett-launcher/main/photos.json",
-  "photosVersion": 2,
+  "photosVersion": 3,
   "linkStyle": "app",
   "channels": {}
 }

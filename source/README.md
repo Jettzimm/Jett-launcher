@@ -79,7 +79,7 @@ Everything after the first install comes from GitHub (github.com/Jettzimm/jett-l
 - `feed.json` — the latest version number, the APK link, channel codes and the photo library link.
   The box checks it on boot, daily at 4am, and every 6 hours while the TV is on.
 - A newer version downloads in the background and installs the next time the TV turns off.
-- `photos.json` + `photos/` — the full photo library (about 1,200). The app ships with 180 built in
+- `photos.json` + `photos/` — the full photo library (about 1,200, in 4K). The app ships with 179 built in (1080p)
   and downloads the rest in the background over the first hour or so. Adding/removing a photo there
   (and bumping `photosVersion` in feed.json) updates the TV within a day.
 
@@ -115,7 +115,7 @@ feed (no reinstall needed).
 - `Rules.kt` — Saturday GameDay, Sunday RedZone → primetime, the 10-second countdown.
 - `Sky.kt` — sunrise/sunset maths and the photo background (cross-fades every 3 minutes).
   Photos live in `app/src/main/assets/bg/{dawn,morning,midday,golden,dusk,night}/`; add or delete
-  .webp files to change the built-in starter set (180). The full library is online (see Updates).
+  .webp files to change the built-in starter set (179). The full library is online (see Updates).
   Photos are from Unsplash (free to use under the Unsplash License).
 - `Morning.kt` — the CNBC + morning-show cards (schedule in `Config.kt`).
 - `MainActivity.kt` — the screen itself and remote/focus behaviour.

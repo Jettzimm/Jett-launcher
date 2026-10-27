@@ -13,7 +13,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * The online photo library. The app ships with a starter set (assets/bg); the full library
+ * The online photo library (full 4K). The app ships with a smaller starter set (assets/bg); the full library
  * lives online and is mirrored to the box's storage in the background:
  *
  *   photos.json = { "version": 3, "base": "https://…/photos/",
@@ -76,10 +76,6 @@ object PhotoLibrary {
         val lists = manifest.optJSONObject("photos") ?: return true
         prefs.edit().putBoolean("complete", false).apply()
 
-        // Ids already built into the app don't need downloading.
-        val builtIn = PHASES.flatMap { p -> try { ctx.assets.list("bg/$p").orEmpty().toList() } catch (e: Exception) { emptyList() } }
-            .map { it.substringBeforeLast('.') }.toSet()
-
         val captions = JSONObject()
         val wanted = PHASES.associateWith { p ->
             val arr = lists.optJSONArray(p) ?: return@associateWith emptySet<String>()
@@ -106,7 +102,6 @@ object PhotoLibrary {
             }
             for (id in want) {
                 if (stopRequested) return false
-                if (id in builtIn) continue
                 val out = File(folder, "$id.webp")
                 if (out.exists()) continue
                 if (root.usableSpace < 1_000_000_000L) { Log.w(TAG, "Low storage, pausing"); return true }

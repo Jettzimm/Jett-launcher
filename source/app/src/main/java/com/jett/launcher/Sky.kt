@@ -195,9 +195,10 @@ class Backdrop(context: Context) : android.widget.FrameLayout(context) {
                 .filter { it.matches(Regex(".*\\.(jpe?g|png|webp)", RegexOption.IGNORE_CASE)) }
                 .map { "asset:bg/${p.folder}/$it" }
         } catch (e: Exception) { emptyList() }
-        val ids = builtIn.map { idOf(it) }.toSet()
-        val downloaded = PhotoLibrary.files(context, p.folder).filter { idOf(it.path) !in ids }.map { it.path }
-        return builtIn + downloaded
+        // The downloaded (full-quality) copy wins over the built-in starter copy of the same photo.
+        val downloaded = PhotoLibrary.files(context, p.folder).map { it.path }
+        val have = downloaded.map { idOf(it) }.toSet()
+        return downloaded + builtIn.filter { idOf(it) !in have }
     }
 
     private fun idOf(path: String) = path.substringAfterLast('/').substringBeforeLast('.')
@@ -256,12 +257,23 @@ class Backdrop(context: Context) : android.widget.FrameLayout(context) {
         front = incoming
     }
 
+    /**
+     * Decodes at the screen's real resolution: a 4K photo on a 1080p screen is shrunk 2x while
+     * decoding (sharp, and a quarter of the memory); on a 4K screen it stays full size.
+     * Full colour (no banding in skies).
+     */
     private fun decode(path: String): Bitmap? = try {
-        val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
-        val input = if (path.startsWith("asset:")) context.assets.open(path.removePrefix("asset:"))
-                    else java.io.File(path).inputStream()
-        input.use { BitmapFactory.decodeStream(it, null, opts) }
-    } catch (e: Exception) { null }
+        fun open() = if (path.startsWith("asset:")) context.assets.open(path.removePrefix("asset:"))
+                     else java.io.File(path).inputStream()
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        open().use { BitmapFactory.decodeStream(it, null, bounds) }
+        val dm = resources.displayMetrics
+        val targetW = maxOf(width, dm.widthPixels, 1280); val targetH = maxOf(height, dm.heightPixels, 720)
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= targetW && bounds.outHeight / (sample * 2) >= targetH) sample *= 2
+        val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888; inSampleSize = sample }
+        open().use { BitmapFactory.decodeStream(it, null, opts) }
+    } catch (e: Throwable) { null }   // incl. OutOfMemoryError: skip that photo, keep going
 
     /** Full-screen photo mode: hide the darkening so the photo shows clean. */
     fun setAmbient(on: Boolean) { scrim.animate().alpha(if (on) 0f else 1f).setDuration(600).start() }

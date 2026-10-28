@@ -40,13 +40,28 @@ adb shell dpm set-active-admin com.jett.launcher/.SleepAdmin
 - Line 3 lets the app install its own updates (only of itself).
 - Line 4 lets the sleep timer turn the box off (the Samsung follows through HDMI-CEC).
 
+**Check the grants took** (Google TV can ignore them silently):
+```
+adb shell appops get com.jett.launcher
+adb shell dumpsys device_policy | grep -i jett
+```
+The first should list `SYSTEM_ALERT_WINDOW: allow` and `REQUEST_INSTALL_PACKAGES: allow`; the
+second should mention `com.jett.launcher/.SleepAdmin`. If not, re-run the commands above.
+
 ### 5. Make it the home screen
 Google TV has no setting to change the home app, so we switch off the stock one:
 ```
 adb shell pm disable-user --user 0 com.google.android.apps.tv.launcherx
 adb shell pm disable-user --user 0 com.google.android.tungsten.setupwraith
 ```
-Press Home on the remote. Your launcher appears.
+Press Home on the remote. Your launcher appears. To confirm it's the only home app:
+```
+adb shell cmd package query-activities -a android.intent.action.MAIN -c android.intent.category.HOME
+```
+(should list only `com.jett.launcher`). A few minutes after first start, the background jobs should show:
+```
+adb shell dumpsys jobscheduler | grep com.jett
+```
 
 **To undo at any time:**
 ```
@@ -63,8 +78,12 @@ adb uninstall com.jett.launcher
 The gear tile at the end of the app row opens Settings, since the stock home screen is off.
 
 ### 6. Box settings (on the Onn, with its remote)
-- Settings → System → Power & energy → **Energy mode: Increased** (or Optimized; not "Low energy"),
-  so the box can finish installing an update after the TV turns off.
+- Settings → System → Power & energy → **Energy mode: Increased** (not Optimized or Low energy —
+  those cut the box off the internet in standby, so updates and photos couldn't download).
+- Settings → System → **Ambient mode** (screensaver) → **Off** / Start after **Never**. The launcher's
+  own full-screen photos replace it (the Google one would cover them).
+- Same Power & energy menu → **When inactive** → turn off display after **4 hours** (if your box has it). Updates
+  install while the box is in standby; this makes sure it gets there even if the TV doesn't tell it.
 - Settings → Display & Sound → **HDMI-CEC**: turn on **CEC**, **TV auto power off** and
   **Device auto power off**, so the box and TV go to sleep together. (Exact names vary slightly.)
 
@@ -77,16 +96,22 @@ The gear tile at the end of the app row opens Settings, since the stock home scr
 ## Updates and photos (automatic)
 Everything after the first install comes from GitHub (github.com/Jettzimm/jett-launcher):
 - `feed.json` — the latest version number, the APK link, channel codes and the photo library link.
-  The box checks it on boot, daily at 4am, and every 6 hours while the TV is on.
-- A newer version downloads in the background and installs the next time the TV turns off.
+  The box checks it on boot, daily at 4am, and when you go to the home screen (at most every 6 hours).
+- A newer version downloads in the background and installs the next time the TV turns off
+  (or at 4am / when the download finishes, as long as you're not actively using the home screen —
+  updating only restarts this launcher, so a show playing in another app isn't interrupted).
+- The very first self-update may ask for a one-time **OK** on screen (Android's rule for apps
+  installed with adb). It only shows while you're on the home screen with the TV on.
 - `photos.json` + `photos/` — the full photo library (about 1,200, in 4K). The app ships with 179 built in (1080p)
-  and downloads the rest in the background over the first hour or so. Adding/removing a photo there
-  (and bumping `photosVersion` in feed.json) updates the TV within a day.
+  and downloads the rest in the background over the first few hours. Adding/removing a photo there
+  (and bumping `photosVersion` in feed.json) updates the TV within a day. The first full download
+  (~1 GB, 4K) takes a few hours in the background; the starter set shows meanwhile.
 
-Manual install still works any time (`-d` allows going back a version):
+Manual install still works any time (same or newer version only — Android won't install an
+older version over a newer one; to roll back, republish the old code with a higher version number):
 ```
 adb connect 192.168.1.42:5555
-adb install -r -d JettLauncher.apk
+adb install -r JettLauncher.apk
 ```
 
 ## Channel codes (direct jumps into YouTube TV)
@@ -123,4 +148,5 @@ feed (no reinstall needed).
 Build yourself (optional): install Android Studio, open this folder, Build → Build APK.
 
 Signing: builds are signed with `jett.keystore` (password in `keystore.properties`). Both are kept
-out of GitHub. Keep a copy of them: without that key, future versions can't install over this one.
+out of GitHub, but they ARE in JettLauncher-source.zip — keep that zip private (iCloud Drive is
+fine; don't share it). Without that key, future versions can't install over this one.

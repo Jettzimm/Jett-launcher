@@ -121,7 +121,8 @@ object Sports {
             try { fetchLeague(lg) } catch (e: Exception) { emptyList() }
         }
         val soon = now.plusSeconds(Config.SHOW_BAR_MINUTES_BEFORE * 60L)
-        val relevant = all.filter { it.isLive || (it.state == "pre" && it.start.isBefore(soon) && it.start.isAfter(now.minusSeconds(3600))) }
+        val relevant = all.filter { it.seasonType != 1 }   // no preseason
+            .filter { it.isLive || (it.state == "pre" && it.start.isBefore(soon) && it.start.isAfter(now.minusSeconds(3600))) }
         if (relevant.isEmpty()) return emptyList()
 
         val leagueOrder = Config.LEAGUES.map { it.key }

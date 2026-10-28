@@ -39,8 +39,7 @@ object Router {
         val intent = pm.getLeanbackLaunchIntentForPackage(pkg) ?: pm.getLaunchIntentForPackage(pkg)
             ?: return false
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        ctx.startActivity(intent)
-        return true
+        return try { ctx.startActivity(intent); true } catch (e: Exception) { Log.w(TAG, "Couldn't open $pkg", e); false }
     }
 
     /** Opens a live channel: deep link into YouTube TV if we have one, else just the app. */
@@ -86,6 +85,7 @@ object Router {
 
     /** Returns app key for a network name, or [fallback] if unknown. */
     fun appForNetwork(network: String, fallback: String?): String? {
+        Config.NETWORK_TO_APP_EXACT.entries.firstOrNull { it.key.equals(network.trim(), true) }?.let { return it.value }
         Config.NETWORK_TO_APP.firstOrNull { network.contains(it.first, ignoreCase = true) }?.let {
             // "Prime Video (Local)" etc. still means Prime.
             return it.second

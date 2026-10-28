@@ -90,7 +90,12 @@ object Config {
         "Apple TV" to "appletv",
         "Paramount+" to "paramount",
         "Max" to "max",
+        "Disney+" to "disney",
+        "SECN+" to "espn",
+        "ACCNX" to "espn",
     )
+    // Exact-name matches (so "YouTube" doesn't catch "YouTube TV").
+    val NETWORK_TO_APP_EXACT = mapOf("YouTube" to "youtube")
 
     // When nothing above matches (e.g. an out-of-market Panthers game on a
     // regional channel), open this app — out-of-market NHL streams on ESPN+.

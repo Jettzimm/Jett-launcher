@@ -50,7 +50,7 @@ object PhotoLibrary {
         if (!url.startsWith("https://")) return
         val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val changed = url != prefs.getString("url", null) || version != prefs.getInt("syncedVersion", -1)
-        prefs.edit().putString("url", url).apply()
+        prefs.edit().putString("url", url).putInt("wantVersion", version).apply()
         if (changed || !prefs.getBoolean("complete", false)) schedule(ctx)
     }
 
@@ -62,20 +62,16 @@ object PhotoLibrary {
             .setPersisted(true).build())
     }
 
-    @Volatile var stopRequested = false
-
-    /** Runs inside the sync job. Returns false to retry later. */
-    @Synchronized fun sync(ctx: Context): Boolean {
+    /** Runs inside the sync job; [stopped] turns true when the system stops that job. Returns false to retry later. */
+    @Synchronized fun sync(ctx: Context, stopped: java.util.concurrent.atomic.AtomicBoolean): Boolean {
         val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val url = prefs.getString("url", null) ?: return true
         val manifest = try { JSONObject(Sports.httpGet("$url?t=${System.currentTimeMillis() / 60_000}")) }
             catch (e: Exception) { Log.w(TAG, "Manifest fetch failed", e); return false }
-        val version = manifest.optInt("version", 0)
+        val version = prefs.getInt("wantVersion", manifest.optInt("version", 0))   // the feed's number
         val base = manifest.optString("base").let { if (it.endsWith("/")) it else "$it/" }
         if (!base.startsWith("https://")) return true
         val lists = manifest.optJSONObject("photos") ?: return true
-        prefs.edit().putBoolean("complete", false).apply()
-
         val captions = JSONObject()
         val wanted = PHASES.associateWith { p ->
             val arr = lists.optJSONArray(p) ?: return@associateWith emptySet<String>()
@@ -88,11 +84,13 @@ object PhotoLibrary {
         }
         // An empty or broken list must never wipe the library.
         if (wanted.values.sumOf { it.size } < 20) return true
+        prefs.edit().putBoolean("complete", false).apply()
 
         val root = dir(ctx); root.mkdirs()
         File(root, "captions.json.tmp").apply { writeText(captions.toString()); renameTo(File(root, "captions.json")) }
 
         var failures = 0
+        var skipped = false   // photos passed over during a rate-limit pause (picked up next run)
         for (p in PHASES) {
             val folder = File(root, p).apply { mkdirs() }
             val want = wanted.getValue(p)
@@ -101,46 +99,58 @@ object PhotoLibrary {
                 if (!f.name.endsWith(".webp") || f.name.removeSuffix(".webp") !in want) f.delete()
             }
             for (id in want) {
-                if (stopRequested) return false
+                if (stopped.get()) return false
                 val out = File(folder, "$id.webp")
                 if (out.exists()) continue
-                if (root.usableSpace < 1_000_000_000L) { Log.w(TAG, "Low storage, pausing"); return true }
-                if (!fetch("$base$p/$id.webp", out)) { if (++failures >= 25) return false }
+                if (root.usableSpace < 1_000_000_000L) { Log.w(TAG, "Low storage, pausing"); return false }   // retry later
+                when (fetch("$base$p/$id.webp", out)) {
+                    1 -> {}
+                    429 -> { skipped = true; Thread.sleep(60_000); if (stopped.get()) return false }   // GitHub rate limit: pause, not a failure
+                    else -> if (++failures >= 25) return false
+                }
             }
         }
-        prefs.edit().putInt("syncedVersion", version).putBoolean("complete", failures == 0).apply()
-        return failures == 0
+        val done = failures == 0 && !skipped
+        prefs.edit().putInt("syncedVersion", version).putBoolean("complete", done).apply()
+        return done
     }
 
-    /** One photo: must be a complete WebP, else it's discarded. */
-    private fun fetch(url: String, out: File): Boolean {
+    /** One photo: must be a complete WebP, else it's discarded. 1 = saved, 429 = rate-limited, 0 = failed. */
+    private fun fetch(url: String, out: File): Int {
         val part = File(out.parentFile, out.name + ".part")
         return try {
             val conn = URL(url).openConnection() as HttpURLConnection
             conn.connectTimeout = 15_000; conn.readTimeout = 30_000
             try {
-                if (conn.responseCode != 200) return false
+                val code = conn.responseCode
+                if (code == 429) return 429
+                if (code != 200) return 0
                 val expected = conn.contentLengthLong
                 conn.inputStream.use { input -> part.outputStream().use { input.copyTo(it) } }
                 val head = part.inputStream().use { val b = ByteArray(12); it.read(b); String(b, Charsets.ISO_8859_1) }
                 val ok = head.startsWith("RIFF") && head.endsWith("WEBP") && part.length() > 8_000 &&
                     (expected <= 0 || part.length() == expected)
                 if (ok) part.renameTo(out) else part.delete()
-                ok
+                if (ok) 1 else 0
             } finally { conn.disconnect() }
-        } catch (e: Exception) { part.delete(); false }
+        } catch (e: Exception) { part.delete(); 0 }
     }
 }
 
 /** Mirrors the online library in the background (survives reboots; retries when offline). */
 class PhotoSyncJob : JobService() {
+    // The current run's stop flag (only one sync job runs at a time). Each run gets its own, so
+    // a restarted run can't un-stop an older one still finishing a file.
+    @Volatile private var current: java.util.concurrent.atomic.AtomicBoolean? = null
+
     override fun onStartJob(params: JobParameters): Boolean {
-        PhotoLibrary.stopRequested = false
+        val stopped = java.util.concurrent.atomic.AtomicBoolean(false)
+        current = stopped
         Thread {
-            val ok = try { PhotoLibrary.sync(this) } catch (e: Exception) { false }
-            jobFinished(params, !ok)
+            val ok = try { PhotoLibrary.sync(this, stopped) } catch (e: Exception) { false }
+            if (!stopped.get()) jobFinished(params, !ok)
         }.start()
         return true
     }
-    override fun onStopJob(params: JobParameters): Boolean { PhotoLibrary.stopRequested = true; return true }
+    override fun onStopJob(params: JobParameters): Boolean { current?.set(true); return true }
 }

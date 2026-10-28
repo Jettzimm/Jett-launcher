@@ -38,8 +38,13 @@ object Morning {
 
     private fun computeMode(now: ZonedDateTime): Pair<Config.MorningMode, Boolean> {
         val guess = now.monthValue in 9..12 || now.monthValue == 1
+        // College Saturdays (GameDay, Big Noon, SEC Nation): late Aug through conference
+        // championship weekend (first Saturday of December). After that it's bowls, which those
+        // shows don't cover.
+        val collegeSeason = now.monthValue in 8..11 || (now.monthValue == 12 && now.dayOfMonth <= 7)
         return when (now.dayOfWeek) {
-            DayOfWeek.SATURDAY -> gamesToday("cfb", now).let { (if (it ?: guess) Config.COLLEGE_SATURDAY else Config.SATURDAY_MORNING) to (it != null) }
+            DayOfWeek.SATURDAY -> if (!collegeSeason) Config.SATURDAY_MORNING to true
+                else gamesToday("cfb", now).let { (if (it ?: guess) Config.COLLEGE_SATURDAY else Config.SATURDAY_MORNING) to (it != null) }
             DayOfWeek.SUNDAY -> gamesToday("nfl", now).let { (if (it ?: guess) Config.NFL_SUNDAY_MORNING else Config.SUNDAY_MORNING) to (it != null) }
             else -> Config.WEEKDAY_MORNING to true
         }
@@ -73,6 +78,7 @@ object Morning {
     /** true/false, or null if the check couldn't run (no connection). */
     private fun gamesToday(key: String, now: ZonedDateTime): Boolean? = try {
         val lg = Config.LEAGUES.first { it.key == key }
-        Sports.fetchLeague(lg, DATE.format(now.toLocalDate())).isNotEmpty()
+        Sports.fetchLeague(lg, DATE.format(now.toLocalDate()))
+            .any { if (key == "nfl") Rules.counts(it) else it.seasonType == 2 || it.seasonType == 3 }   // no preseason / Pro Bowl
     } catch (e: Exception) { null }
 }

@@ -23,7 +23,7 @@ object SunClock {
             0.002697 * cos(3 * gamma) + 0.00148 * sin(3 * gamma)
         val latR = Math.toRadians(lat)
         val ha = Math.toDegrees(acos(cos(Math.toRadians(90.833)) / (cos(latR) * cos(decl)) - tan(latR) * tan(decl)))
-        val offsetMin = zone.rules.getOffset(date.atStartOfDay(zone).toInstant()).totalSeconds / 60.0
+        val offsetMin = zone.rules.getOffset(date.atTime(12, 0).atZone(zone).toInstant()).totalSeconds / 60.0
         val rise = 720 - 4 * (lon + ha) - eqTime + offsetMin
         val set = 720 - 4 * (lon - ha) - eqTime + offsetMin
         return rise.roundToInt() to set.roundToInt()
@@ -244,12 +244,16 @@ class Backdrop(context: Context) : android.widget.FrameLayout(context) {
         val incoming = if (front === a) b else a
         val outgoing = front
         incoming.animate().cancel()
+        outgoing.animate().cancel()   // a photo shown moments ago: stop its fade-out clearing this view
+        outgoing.alpha = 1f
         incoming.setImageBitmap(bmp)
         incoming.scaleX = 1f; incoming.scaleY = 1f
         incoming.bringToFront(); scrim.bringToFront()
         val fade = if (fast) 0L else Config.PHOTO_FADE_MS
         incoming.alpha = if (fast) 1f else 0f
-        incoming.animate().alpha(1f).setDuration(fade).withEndAction { outgoing.alpha = 0f; outgoing.setImageDrawable(null) }.start()
+        incoming.animate().alpha(1f).setDuration(fade).withEndAction {
+            if (outgoing !== front) { outgoing.alpha = 0f; outgoing.setImageDrawable(null) }
+        }.start()
         // Slow drift, like Apple TV's aerials. Hardware-accelerated, so cheap on the box.
         incoming.animate().scaleX(1.08f).scaleY(1.08f)
             .setDuration(Config.PHOTO_ROTATE_MINUTES * 60_000 + fade)

@@ -20,8 +20,9 @@ import java.time.ZonedDateTime
  *   { "versionCode": 3, "apk": "https://…/JettLauncher.apk",
  *     "channels": { "ESPN": "abc123", "NFL RedZone": "def456", … },
  *     "photos": "https://…/photos.json", "photosVersion": 1 }
- * Channel codes are saved straight away. A newer APK is downloaded and installed only
- * while the TV is off, so it never interrupts what you're watching.
+ * Channel codes are saved straight away. A newer APK is downloaded in the background and
+ * installed while the TV is off (or while you're not using the home screen), so it never
+ * interrupts what you're watching.
  */
 object Updater {
     private const val TAG = "JettUpdater"
@@ -64,13 +65,19 @@ object Updater {
             feed.optJSONObject("channels")?.let { ch -> ch.keys().forEach { k -> e.putString("ch_$k", ch.optString(k)) } }
             e.putLong("lastFeed", System.currentTimeMillis())
             feed.optString("linkStyle").takeIf { it == "app" || it == "web" }?.let { e.putString("linkStyle", it) }
-            feed.optString("photos").takeIf { it.isNotEmpty() }?.let { PhotoLibrary.onFeed(ctx, it, feed.optInt("photosVersion", 0)) }
             val remote = feed.optInt("versionCode", 0)
-            if (remote > localVersion(ctx) && remote != prefs.getInt("readyVersion", 0) && prefs.getInt("fails_$remote", 0) < 3) {
-                e.putInt("wantVersion", remote).putString("wantApk", feed.getString("apk"))
+            val apk = feed.optString("apk")
+            val alreadyHave = remote == prefs.getInt("readyVersion", 0) && readyFile(ctx).exists()
+            if (remote > localVersion(ctx) && apk.startsWith("https://") && !alreadyHave &&
+                prefs.getInt("fails_$remote", 0) < 3) {
+                e.putInt("wantVersion", remote).putString("wantApk", apk)
                 e.apply()
-                scheduleDownload(ctx)
+                try { scheduleDownload(ctx) } catch (ex: Exception) { Log.w(TAG, "Couldn't queue download", ex) }
             } else e.apply()
+            // Photos last and on their own, so a problem there can never block updates or codes.
+            try {
+                feed.optString("photos").takeIf { it.isNotEmpty() }?.let { PhotoLibrary.onFeed(ctx, it, feed.optInt("photosVersion", 0)) }
+            } catch (ex: Exception) { Log.w(TAG, "Photo library check failed", ex) }
         } catch (e: Exception) { Log.w(TAG, "Update check failed", e) }
     }
 
@@ -84,6 +91,8 @@ object Updater {
 
     private fun scheduleDownload(ctx: Context) {
         val js = ctx.getSystemService(android.app.job.JobScheduler::class.java)
+        // Re-scheduling the same job would cancel a download in progress.
+        if (js.getPendingJob(42) != null) return
         js.schedule(android.app.job.JobInfo.Builder(42, android.content.ComponentName(ctx, UpdateDownloadJob::class.java))
             .setRequiredNetworkType(android.app.job.JobInfo.NETWORK_TYPE_ANY)
             .setPersisted(true).build())
@@ -91,11 +100,17 @@ object Updater {
 
     fun readyFile(ctx: Context) = File(ctx.filesDir, "update.apk")
 
-    /** Runs inside the download job. */
-    @Synchronized fun download(ctx: Context): Boolean {
+    private val downloadLock = Any()
+
+    /** Runs inside the download job. (Own lock, so a slow download never blocks an install check.) */
+    fun download(ctx: Context): Boolean = synchronized(downloadLock) { downloadLocked(ctx) }
+
+    private fun downloadLocked(ctx: Context): Boolean {
         val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val v = prefs.getInt("wantVersion", 0); val url = prefs.getString("wantApk", null) ?: return true
         if (v <= localVersion(ctx)) return true
+        if (prefs.getInt("readyVersion", 0) == v && readyFile(ctx).exists()) return true   // already downloaded
+        if (prefs.getInt("fails_$v", 0) >= 3) return true   // gave up on this version
         val part = File(ctx.filesDir, "update.part")
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.instanceFollowRedirects = true; conn.connectTimeout = 15_000; conn.readTimeout = 60_000
@@ -107,20 +122,68 @@ object Updater {
         if ((expected > 0 && part.length() != expected) || head[0] != 'P'.code.toByte() || head[1] != 'K'.code.toByte()) {
             part.delete(); return false
         }
+        // Must really be the version the feed promised, of this app (else a mislabelled APK would
+        // reinstall itself forever).
+        @Suppress("DEPRECATION")
+        val info = ctx.packageManager.getPackageArchiveInfo(part.path, 0)
+        if (info == null) {   // unreadable (corrupt download): try again later, at most 3 times
+            part.delete(); prefs.edit().putInt("fails_$v", prefs.getInt("fails_$v", 0) + 1).apply(); return false
+        }
+        if (info.packageName != ctx.packageName || info.longVersionCode != v.toLong()) {
+            part.delete()
+            prefs.edit().putInt("fails_$v", 3).apply()   // never retry a mislabelled version
+            return true
+        }
+        // Record the version first, then move the file in (an install check in between just sees no file yet).
+        prefs.edit().putInt("readyVersion", v).commit()
         part.renameTo(readyFile(ctx))
-        prefs.edit().putInt("readyVersion", v).apply()
         // Already off? Install straight away; otherwise it installs when the TV next turns off.
-        if (!ctx.getSystemService(PowerManager::class.java).isInteractive) installIfReady(ctx)
+        if (!ctx.getSystemService(PowerManager::class.java).isInteractive) installIfReady(ctx) else installIfIdleOnHome(ctx)
         return true
     }
 
-    /** Installs a downloaded update, only while the TV is off. Local file, takes seconds. */
-    @Synchronized fun installIfReady(ctx: Context) {
+    /**
+     * Android asked for a one-time OK (usually only the very first self-update). That prompt is
+     * shown the next time you're on the home screen with the TV on, never into a dark screen.
+     */
+    fun confirmIfNeeded(ctx: Context) {
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (prefs.getBoolean("needsOk", false)) {
+            val v = prefs.getInt("readyVersion", 0)
+            val asks = prefs.getInt("asks_$v", 0)
+            // Pressed Back on it: don't ask again for 12 hours; after 3 asks, wait for the next version.
+            if (System.currentTimeMillis() - prefs.getLong("askedAt", 0) < 12 * 3600_000L) return
+            // An install of this version is still in flight: don't spend an ask on it.
+            if (prefs.getInt("committedVersion", 0) == v &&
+                System.currentTimeMillis() - prefs.getLong("committedAt", 0) < 10 * 60_000L) return
+            prefs.edit().putBoolean("needsOk", false).putInt("asks_$v", asks + 1)
+                .putLong("askedAt", System.currentTimeMillis()).apply()
+            if (asks >= 3) return
+            installIfReady(ctx, whileOn = true)
+        }
+    }
+
+    /**
+     * Fallback for a box that never goes to standby (HDMI-CEC not putting it to sleep): install
+     * anyway unless you're actively using the home screen. Updating only restarts this launcher,
+     * so a show playing in another app (or the screensaver) isn't interrupted.
+     */
+    fun installIfIdleOnHome(ctx: Context) {
+        val activeOnHome = MainActivity.onHome && System.currentTimeMillis() - MainActivity.lastKeyAt < 2 * 3600_000L
+        if (!activeOnHome && !CountdownActivity.showing) installIfReady(ctx, whileOn = true)
+    }
+
+    /** Installs a downloaded update (normally while the TV is off). Local file, takes seconds. */
+    @Synchronized fun installIfReady(ctx: Context, whileOn: Boolean = false) {
         val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val file = readyFile(ctx)
         if (!file.exists()) return
-        if (prefs.getInt("readyVersion", 0) <= localVersion(ctx)) { file.delete(); return }
-        if (ctx.getSystemService(PowerManager::class.java).isInteractive) return
+        val ready = prefs.getInt("readyVersion", 0)
+        if (ready <= localVersion(ctx)) { file.delete(); return }
+        // Already handed this version to Android in the last 10 minutes: don't install it twice.
+        if (prefs.getInt("committedVersion", 0) == ready &&
+            System.currentTimeMillis() - prefs.getLong("committedAt", 0) < 10 * 60_000L) return
+        if (!whileOn && ctx.getSystemService(PowerManager::class.java).isInteractive) return
         try {
             val installer = ctx.packageManager.packageInstaller
             val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
@@ -134,13 +197,21 @@ object Updater {
                     }
                 } catch (e: Exception) { session.abandon(); throw e }
                 // TV came back on during the copy? Don't restart the app in front of you.
-                if (ctx.getSystemService(PowerManager::class.java).isInteractive) { session.abandon(); return }
+                if (!whileOn && ctx.getSystemService(PowerManager::class.java).isInteractive) { session.abandon(); return }
                 val pi = PendingIntent.getBroadcast(ctx, 8, Intent(ctx, InstallResultReceiver::class.java).setAction(ACTION_INSTALLED),
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
+                prefs.edit().putInt("committedVersion", ready).putLong("committedAt", System.currentTimeMillis()).commit()
                 session.commit(pi.intentSender)
             }
             Log.i(TAG, "Update committed")
-        } catch (e: Exception) { Log.w(TAG, "Install failed", e) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Install failed", e)
+            // Count it, so a version that can never install stops being retried after 3 tries.
+            val v = prefs.getInt("readyVersion", 0)
+            val fails = prefs.getInt("fails_$v", 0) + 1
+            prefs.edit().putInt("fails_$v", fails).apply()
+            if (fails >= 3) { file.delete(); prefs.edit().remove("readyVersion").apply() }
+        }
     }
 }
 
@@ -159,11 +230,26 @@ class UpdateDownloadJob : android.app.job.JobService() {
 class UpdateReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         when (intent.action) {
+            // Just updated itself: the app was restarted; re-arm everything so the TV-on listener
+            // and alarms are live before the next power-on.
+            Intent.ACTION_MY_PACKAGE_REPLACED -> {
+                val prefs = ctx.getSharedPreferences("updater", Context.MODE_PRIVATE)
+                val local = ctx.packageManager.getPackageInfo(ctx.packageName, 0).longVersionCode
+                if (prefs.getInt("readyVersion", 0) <= local) { Updater.readyFile(ctx).delete(); prefs.edit().remove("readyVersion").apply() }
+                Sleep.rearm(ctx); WindowAlarm.scheduleNext(ctx); Rules.scheduleNflCheck(ctx); Updater.scheduleDaily(ctx)
+                HomeRestore.run(ctx)
+            }
+            HomeRestore.ACTION -> HomeRestore.run(ctx)
             Updater.ACTION_CHECK, Intent.ACTION_BOOT_COMPLETED -> {
                 if (intent.action == Intent.ACTION_BOOT_COMPLETED) { Sleep.rearm(ctx); WindowAlarm.scheduleNext(ctx) }
                 val pending = goAsync()
                 Thread {
-                    try { Updater.check(ctx); Updater.installIfReady(ctx) } finally {
+                    try {
+                        Updater.check(ctx)
+                        if (ctx.getSystemService(PowerManager::class.java).isInteractive) Updater.installIfIdleOnHome(ctx)
+                        else Updater.installIfReady(ctx)
+                    }
+                    catch (e: Exception) { } finally {
                         Updater.scheduleDaily(ctx); pending.finish()
                     }
                 }.start()
@@ -178,6 +264,11 @@ class InstallResultReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         val prefs = ctx.getSharedPreferences("updater", Context.MODE_PRIVATE)
         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+        // Cancelled (we set it aside for later, or you pressed Back on the OK screen): keep the
+        // file and ask again on the home screen. Not a failure.
+        if (status == PackageInstaller.STATUS_FAILURE_ABORTED) {
+            prefs.edit().putBoolean("needsOk", true).apply(); return
+        }
         if (status != PackageInstaller.STATUS_SUCCESS && status != PackageInstaller.STATUS_PENDING_USER_ACTION) {
             // Bad file or failed install: clear it; after 3 failures, stop retrying that version.
             Updater.readyFile(ctx).delete()
@@ -185,12 +276,48 @@ class InstallResultReceiver : BroadcastReceiver() {
             val fails = prefs.getInt("fails_$v", 0) + 1
             prefs.edit().remove("readyVersion").putInt("fails_$v", fails).apply()
         }
-        // Only the very first self-update may need a one-time OK on screen.
+        // Only the very first self-update may need a one-time OK on screen. TV off: drop this
+        // attempt and ask next time you're on the home screen instead.
         if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            // Only show it if you're on the home screen right now (not into a dark TV or a show).
+            val on = ctx.getSystemService(PowerManager::class.java).isInteractive && MainActivity.onHome
             @Suppress("DEPRECATION")
-            (intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT))?.let {
-                it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); ctx.startActivity(it)
+            val confirm = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+            if (on && confirm != null) {
+                confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); ctx.startActivity(confirm)
+            } else {
+                val id = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
+                if (id >= 0) try { ctx.packageManager.packageInstaller.abandonSession(id) } catch (e: Exception) { }
+                prefs.edit().putBoolean("needsOk", true).apply()
             }
         }
+    }
+}
+
+/**
+ * After a self-update Android restarts this app without its home screen, and Android 14 then
+ * holds back TV-on/off signals from it. Bringing the home screen back (only while the TV is
+ * off, so nothing on screen is interrupted) restores normal behaviour; otherwise retry every
+ * 10 minutes for up to a day.
+ */
+object HomeRestore {
+    const val ACTION = "com.jett.launcher.HOME_RESTORE"
+    fun run(ctx: Context) {
+        val prefs = ctx.getSharedPreferences("updater", Context.MODE_PRIVATE)
+        if (MainActivity.homeOnTop) { prefs.edit().remove("restoreTries").apply(); return }
+        if (!ctx.getSystemService(PowerManager::class.java).isInteractive) {
+            try {
+                ctx.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                    .setPackage(ctx.packageName).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                prefs.edit().remove("restoreTries").apply(); return
+            } catch (e: Exception) { Log.w("JettUpdater", "Home restore failed", e) }
+        }
+        val tries = prefs.getInt("restoreTries", 0)
+        if (tries >= 144) { prefs.edit().remove("restoreTries").apply(); return }
+        prefs.edit().putInt("restoreTries", tries + 1).apply()
+        val pi = PendingIntent.getBroadcast(ctx, 9, Intent(ctx, UpdateReceiver::class.java).setAction(ACTION),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        ctx.getSystemService(AlarmManager::class.java)
+            .setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 10 * 60_000L, pi)
     }
 }

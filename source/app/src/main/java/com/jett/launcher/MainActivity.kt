@@ -48,6 +48,13 @@ class MainActivity : Activity() {
     private lateinit var appRow: LinearLayout
 
     private var dp = 1f
+    companion object {
+        /** Home screen showing, and when a remote button was last pressed on it (for 4am updates). */
+        @Volatile var onHome = false
+        @Volatile var lastKeyAt = 0L
+        /** The home screen is the top screen (still true while the TV is off with it showing). */
+        @Volatile var homeOnTop = false
+    }
     private var resumed = false
     private var lastAppsSignature = ""
 
@@ -74,10 +81,10 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        resumed = true
+        resumed = true; onHome = true; homeOnTop = true; lastKeyAt = System.currentTimeMillis()
         backdrop.tick()
         updateClock()
-        io.execute { Updater.refreshChannelsIfStale(this) }
+        io.execute { Updater.refreshChannelsIfStale(this); Updater.confirmIfNeeded(this) }
         buildAppRow()
         refreshSports()
         main.post(clockTick); main.postDelayed(sportsTick, 60_000)
@@ -88,7 +95,9 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        resumed = false
+        resumed = false; onHome = false
+        // Paused because another app opened (not just because the TV went off)?
+        if (getSystemService(android.os.PowerManager::class.java).isInteractive) homeOnTop = false
         main.removeCallbacks(clockTick); main.removeCallbacks(sportsTick); main.removeCallbacks(idleTimeout)
     }
 
@@ -228,6 +237,9 @@ class MainActivity : Activity() {
         val signature = installed.joinToString { it.second } + lastBedroom
         if (signature == lastAppsSignature && appRow.childCount > 0) return
         lastAppsSignature = signature
+        // Keep your place: rebuilding (moon tile at 10pm / 5am) shouldn't drop focus.
+        val focusedIdx = (0 until appRow.childCount).firstOrNull { appRow.getChildAt(it).hasFocus() }
+        focusedIdx?.let { idx -> main.post { appRow.getChildAt(idx.coerceAtMost(appRow.childCount - 1))?.requestFocus() } }
         appRow.removeAllViews()
         moonTile = null
 
@@ -260,7 +272,7 @@ class MainActivity : Activity() {
             text = "⚙"; textSize = 34f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
             background = GradientDrawable().apply { cornerRadius = r; setColor(0x55FFFFFF) }
         }
-        focusable(settings, r) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+        focusable(settings, r) { try { startActivity(Intent(Settings.ACTION_SETTINGS)) } catch (e: Exception) { } }
         appRow.addView(settings, LinearLayout.LayoutParams(h, h).apply { marginEnd = px(22) })
 
         // Bedroom mode: sleep timer tile after 10pm.
@@ -279,7 +291,10 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ sports
 
+    @Volatile private var sportsGen = 0
+
     private fun refreshSports() {
+        val gen = ++sportsGen
         io.execute {
             val games = try { Sports.barGames() } catch (e: Exception) { emptyList() }
             // Sunday early games (London etc.) lead the bar and take one pregame card's spot.
@@ -295,7 +310,7 @@ class MainActivity : Activity() {
             val ufc = try { Ufc.current() } catch (e: Exception) { null }
             // Nothing live and no morning shows: CNBC, ESPN, CNN.
             val cards = if (ordered.isEmpty() && shows.isEmpty() && ufc == null) Config.ALWAYS_ON else shows
-            main.post { if (!isDestroyed) showGames(ordered, cards, early.size, ufc) }
+            main.post { if (!isDestroyed && gen == sportsGen) showGames(ordered, cards, early.size, ufc) }   // newest only
         }
     }
 
@@ -450,7 +465,10 @@ class MainActivity : Activity() {
     private fun loadLogo(url: String, into: ImageView) {
         logoCache[url]?.let { into.setImageBitmap(it); return }
         io.execute {
-            val bmp = try { URL(url).openStream().use { BitmapFactory.decodeStream(it) } } catch (e: Exception) { null }
+            val bmp = try {
+                val c = URL(url).openConnection().apply { connectTimeout = 6000; readTimeout = 8000 }
+                c.getInputStream().use { BitmapFactory.decodeStream(it) }
+            } catch (e: Exception) { null }
             if (bmp != null) {
                 val small = Bitmap.createScaledBitmap(bmp, 96, 96 * bmp.height / bmp.width.coerceAtLeast(1), true)
                 logoCache[url] = small
@@ -471,8 +489,17 @@ class MainActivity : Activity() {
         main.postDelayed(idleTimeout, Config.IDLE_TO_PHOTOS_SECONDS * 1000)
     }
 
+    // Photo mode keeps the screen on (so Google TV's own screensaver doesn't cover the photos),
+    // but only for 4 hours without a button press, so the box can still go to standby.
+    private val releaseKeepOn = Runnable { window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+
     private fun setAmbient(on: Boolean) {
         ambient = on
+        main.removeCallbacks(releaseKeepOn)
+        if (on) {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            main.postDelayed(releaseKeepOn, 4 * 3600_000L)
+        } else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         content.animate().alpha(if (on) 0f else 1f).setDuration(600).start()
         backdrop.setAmbient(on)
         caption.animate().alpha(if (on) 1f else 0f).setDuration(600).start()
@@ -483,6 +510,7 @@ class MainActivity : Activity() {
         if (sportsSection.visibility == View.VISIBLE && sportsRow.childCount > 0) sportsRow else appRow
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        lastKeyAt = System.currentTimeMillis()
         if (event.action == KeyEvent.ACTION_DOWN) resetIdle()
         if (ambient) {
             // Any button brings the home screen back (and isn't passed on).

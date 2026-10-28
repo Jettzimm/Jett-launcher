@@ -42,21 +42,44 @@ object Rules {
         return nflTarget(now)
     }
 
-    /** Today's NFL games (Eastern date), or null if ESPN couldn't be reached. */
+    /** Set when the last ESPN fetch failed (so power-on knows whether retrying could help). */
+    @Volatile var lastFetchFailed = false
+
+    /** Real games only: regular season and playoffs; no preseason, no Pro Bowl. */
+    fun counts(g: Game) = (g.seasonType == 2 || g.seasonType == 3) &&
+        g.homeAbbr !in PRO_BOWL && g.awayAbbr !in PRO_BOWL
+    private val PRO_BOWL = setOf("AFC", "NFC")
+
+    /**
+     * Today's NFL games (Eastern date), or null if ESPN couldn't be reached. Before 3am this
+     * also includes last night's games that are still being played (overtime past midnight).
+     */
     fun nflGamesToday(now: ZonedDateTime): List<Game>? {
         val nfl = Config.LEAGUES.first { it.key == "nfl" }
-        val games = try { Sports.fetchLeague(nfl, DATE.format(now.toLocalDate())) } catch (e: Exception) { return null }
-        return games.filter { it.start.atZone(ZONE).toLocalDate() == now.toLocalDate() }
+        fun day(d: java.time.LocalDate) = Sports.fetchLeague(nfl, DATE.format(d))
+            .filter { it.start.atZone(ZONE).toLocalDate() == d && counts(it) }
+        return try {
+            val today = day(now.toLocalDate())
+            if (now.hour < 3) day(now.toLocalDate().minusDays(1)).filter { it.state == "in" } + today else today
+        } catch (e: Exception) { lastFetchFailed = true; null }
     }
 
-    private fun isNight(g: Game) = g.start.atZone(ZONE).hour >= Config.NIGHT_GAME_HOUR
+    private fun isNight(g: Game) = g.start.atZone(ZONE).hour >= Config.NIGHT_GAME_HOUR ||
+        g.start.atZone(ZONE).toLocalDate().isBefore(ZonedDateTime.now(ZONE).toLocalDate())   // last night's, past midnight
     private fun isSundayAfternoon(g: Game) =
         g.start.atZone(ZONE).dayOfWeek == Config.NFL_SUNDAY && g.start.atZone(ZONE).hour in 12..17
+
+    /** Among games that could be switched to: the Dolphins' first, then the earliest. */
+    private val PICK = compareByDescending<Game> { it.pinned }.thenBy { it.start }
 
     /** Games today that can trigger a switch: playoffs, Sunday afternoon (RedZone), night games. */
     fun watched(today: List<Game>) = today.filter { it.seasonType == 3 || isNight(it) || isSundayAfternoon(it) }
 
-    private fun channelOf(g: Game, default: String) = Router.normalize(g.nationalNetworks.firstOrNull() ?: default)
+    /** The channel to switch to: a YouTube TV network if any, else the first listed (Prime etc.). */
+    private fun channelOf(g: Game, default: String): String {
+        val nets = g.nationalNetworks
+        return Router.normalize(nets.firstOrNull { Router.appForNetwork(it, null) == "yttv" } ?: nets.firstOrNull() ?: default)
+    }
 
     /**
      * What the NFL rules want on right now, or null.
@@ -68,10 +91,13 @@ object Rules {
         val nowI = now.toInstant()
         fun startsWithin(g: Game, minutes: Long) = g.state == "in" || (g.state == "pre" && g.start.isBefore(nowI.plusSeconds(minutes * 60)))
 
-        // Playoff days (no RedZone): follow each game, earliest live one first.
+        // Playoff days (no RedZone): follow each game. While one is live it stays the target
+        // (never pulled away mid-game); the next game takes over once it's over.
         if (today.any { it.seasonType == 3 }) {
-            val g = today.filter { it.seasonType == 3 && startsWithin(it, Config.PLAYOFF_SWITCH_MINUTES_BEFORE) }
-                .minByOrNull { it.start } ?: return null
+            val playoff = today.filter { it.seasonType == 3 }
+            val g = (playoff.filter { it.state == "in" }.minWithOrNull(PICK)
+                ?: playoff.filter { startsWithin(it, Config.PLAYOFF_SWITCH_MINUTES_BEFORE) }.minWithOrNull(PICK))
+                ?: return null
             val ch = channelOf(g, "CBS")
             return AutoTarget("playoff_${g.id}", "${g.awayAbbr} @ ${g.homeAbbr} on $ch", ch)
         }
@@ -81,13 +107,15 @@ object Rules {
         ) return AutoTarget("redzone", "NFL RedZone", Config.REDZONE_CHANNEL)
 
         // Night game. Sundays switch as soon as RedZone ends (the pregame show); other nights just
-        // before kickoff. Same id all night, so a Monday doubleheader doesn't yank you to game 2.
+        // before kickoff. Monday doubleheader: a live game stays the target (game 1 is never
+        // interrupted); once it ends, the next one is offered.
         val night = today.filter { isNight(it) && it.state != "post" }
-        val g = (if (now.dayOfWeek == Config.NFL_SUNDAY && now.hour >= Config.REDZONE_START_HOUR) night
-                 else night.filter { startsWithin(it, Config.NIGHT_SWITCH_MINUTES_BEFORE) })
-            .minByOrNull { it.start } ?: return null
-        val ch = channelOf(g, "NBC")
-        return AutoTarget("night", "${g.awayAbbr} @ ${g.homeAbbr} on $ch", ch)
+        val g = (night.filter { it.state == "in" }.minWithOrNull(PICK)
+            ?: (if (now.dayOfWeek == Config.NFL_SUNDAY && now.hour >= Config.REDZONE_START_HOUR) night
+                else night.filter { startsWithin(it, Config.NIGHT_SWITCH_MINUTES_BEFORE) }).minWithOrNull(PICK))
+            ?: return null
+        val ch = channelOf(g, g.localNetworks.firstOrNull() ?: "NBC")
+        return AutoTarget("night_${g.id}", "${g.awayAbbr} @ ${g.homeAbbr} on $ch", ch)
     }
 
     // ------------------------------------------------------------- alarms
@@ -117,15 +145,20 @@ object Rules {
         }
     }
 
-    // Remembers what we last switched to today so we never switch to the same thing twice.
+    // Remembers what we've already offered so we never offer the same thing twice. GameDay and
+    // RedZone are once per day; a specific game (night_/playoff_<id>) is once ever, so a game
+    // that runs past midnight isn't offered again.
+    private fun sessionKey(target: AutoTarget, sessionKey: String) =
+        if (target.id.startsWith("night_") || target.id.startsWith("playoff_")) "once" else sessionKey
+
     fun alreadyDone(ctx: Context, target: AutoTarget, sessionKey: String): Boolean {
         val prefs = ctx.getSharedPreferences("rules", Context.MODE_PRIVATE)
-        return prefs.getString("done_${target.id}", null) == sessionKey
+        return prefs.getString("done_${target.id}", null) == sessionKey(target, sessionKey)
     }
 
     fun markDone(ctx: Context, target: AutoTarget, sessionKey: String) {
         ctx.getSharedPreferences("rules", Context.MODE_PRIVATE).edit()
-            .putString("done_${target.id}", sessionKey).apply()
+            .putString("done_${target.id}", sessionKey(target, sessionKey)).apply()
     }
 
     fun today() = LocalDate.now(ZONE).toString()
@@ -151,6 +184,7 @@ class RuleReceiver : BroadcastReceiver() {
         Thread {
             val now = ZonedDateTime.now(Config.ZONE)
             try {
+                HomeRestore.run(ctx)   // self-heal if Android had killed the launcher
                 val today = Rules.nflGamesToday(now)
                 if (today == null) {   // offline: try again soon
                     Rules.schedule(ctx, now.plusMinutes(10)); return@Thread
@@ -177,11 +211,25 @@ class RuleReceiver : BroadcastReceiver() {
 
 /** "Switching to RedZone in 10… press Back to stay." */
 class CountdownActivity : Activity() {
+    companion object { @Volatile var showing = false }
 
     private val handler = Handler(Looper.getMainLooper())
     private var remaining = Config.COUNTDOWN_SECONDS
     private lateinit var countText: TextView
     private var channel = ""
+
+    private lateinit var titleText: TextView
+
+    override fun onNewIntent(intent: Intent) {
+        // A newer switch while one is showing: show that one instead, from 10 again.
+        super.onNewIntent(intent); setIntent(intent)
+        channel = intent.getStringExtra("channel").orEmpty()
+        titleText.text = "Switching to ${intent.getStringExtra("title").orEmpty()}"
+        handler.removeCallbacksAndMessages(null); remaining = Config.COUNTDOWN_SECONDS; tick()
+    }
+
+    override fun onResume() { super.onResume(); showing = true }
+    override fun onPause() { super.onPause(); showing = false }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -195,10 +243,11 @@ class CountdownActivity : Activity() {
             setPadding((48 * dp).toInt(), (32 * dp).toInt(), (48 * dp).toInt(), (32 * dp).toInt())
             background = GradientDrawable().apply { setColor(0xE6121418.toInt()); cornerRadius = 28 * dp }
         }
-        card.addView(TextView(this).apply {
+        titleText = TextView(this).apply {
             text = "Switching to $title"; setTextColor(Color.WHITE); textSize = 30f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL); gravity = Gravity.CENTER
-        })
+        }
+        card.addView(titleText)
         countText = TextView(this).apply {
             setTextColor(0xFFBFC6D4.toInt()); textSize = 20f; gravity = Gravity.CENTER
             setPadding(0, (12 * dp).toInt(), 0, 0)
@@ -267,5 +316,8 @@ object WindowAlarm {
 
 class WindowAlarmReceiver : BroadcastReceiver() {
     // Receiving this starts the app process (JettApp registers the TV-on listener); then re-arm.
-    override fun onReceive(ctx: Context, intent: Intent) { WindowAlarm.scheduleNext(ctx) }
+    override fun onReceive(ctx: Context, intent: Intent) {
+        WindowAlarm.scheduleNext(ctx)
+        HomeRestore.run(ctx)   // make sure the TV-on listener is truly live for this window
+    }
 }

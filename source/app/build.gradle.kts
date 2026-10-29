@@ -13,8 +13,8 @@ android {
         applicationId = "com.jett.launcher"
         minSdk = 28
         targetSdk = 34
-        versionCode = 31
-        versionName = "4.0"
+        versionCode = 32
+        versionName = "4.1"
     }
 
     // Fixed signing key so every version installs over the last one. The key and its password

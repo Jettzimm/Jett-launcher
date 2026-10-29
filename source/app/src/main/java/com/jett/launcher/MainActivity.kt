@@ -38,6 +38,9 @@ class MainActivity : Activity() {
     private lateinit var backdrop: Backdrop
     private lateinit var caption: TextView
     private lateinit var content: View
+    private lateinit var weatherText: TextView
+    @Volatile private var weather: Weather.Now? = null
+    private var weatherAsked = 0L
     private lateinit var page: ScrollView
     private lateinit var moreApps: LinearLayout
     /** Every app-grid tile in order (first row + the rows below). */
@@ -87,6 +90,7 @@ class MainActivity : Activity() {
         setContentView(buildUi())
         registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_ON))
         Rules.scheduleNflCheck(this)
+        Alerts.schedule(this, 1)
         WindowAlarm.scheduleNext(this)
         Updater.scheduleDaily(this)
         // A real boot counts as a power-on. So does the TV waking into a freshly restarted app
@@ -201,7 +205,17 @@ class MainActivity : Activity() {
             setTextColor(0xD9FFFFFF.toInt()); textSize = 17f
             setPadding(0, px(4), 0, 0); setShadowLayer(10f, 0f, 2f, 0x66000000)
         }
-        col.addView(clock); col.addView(greeting); col.addView(dateLine)
+        // Weather beside the clock ("68° ☀"), in the same light style but smaller.
+        weatherText = TextView(this).apply {
+            setTextColor(0xE6FFFFFF.toInt()); textSize = 30f
+            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            setShadowLayer(12f, 0f, 2f, 0x66000000); setPadding(px(22), 0, 0, px(10))
+        }
+        val clockRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM
+            addView(clock); addView(weatherText)
+        }
+        col.addView(clockRow); col.addView(greeting); col.addView(dateLine)
         col.addView(View(this), LinearLayout.LayoutParams(-1, 0, 1f))
 
         sportsSection = LinearLayout(this).apply {
@@ -271,7 +285,14 @@ class MainActivity : Activity() {
         greeting.text = "$hello, ${Config.NAME}"
         val sleepLeft = Sleep.minutesLeft(this)
         refreshMoon()
+        // Weather: refresh in the background (cached 20 min); rain/snow heads-up on the date line.
+        if (System.currentTimeMillis() - weatherAsked > 5 * 60_000L) {
+            weatherAsked = System.currentTimeMillis()
+            io.execute { val w = Weather.get(this); main.post { weather = w; updateClock() } }
+        }
+        weatherText.text = weather?.let { "${it.tempF}°  ${it.icon}" } ?: ""
         dateLine.text = DateTimeFormatter.ofPattern("EEEE, MMMM d", Locale.US).format(now) +
+            (weather?.heads?.let { "   ·   $it" } ?: "") +
             (if (sleepLeft > 0) "   ·   ☾ Sleep in $sleepLeft min" else "")
         if (isBedroom(now) != lastBedroom) { lastBedroom = isBedroom(now); lastAppsSignature = ""; buildAppRow() }
     }

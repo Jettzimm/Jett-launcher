@@ -33,7 +33,7 @@ class JettApp : Application() {
                 when (i.action) {
                     // No goAsync here: TV on/off are foreground broadcasts with a 10 s limit, and the
                     // work runs on its own thread anyway.
-                    Intent.ACTION_SCREEN_ON -> PowerOn.onWake(c)
+                    Intent.ACTION_SCREEN_ON -> { PowerOn.onWake(c); Alerts.schedule(c, 1) }
                     // TV just went off: a downloaded update installs now, unseen.
                     Intent.ACTION_SCREEN_OFF -> {
                         // Hold a wakelock so the box doesn't suspend mid-install. Never let this

@@ -91,6 +91,7 @@
         <receiver android:name=".RuleAlarmReceiver" android:exported="false" />
         <receiver android:name=".UpdateAlarmReceiver" android:exported="false" />
         <receiver android:name=".SleepReceiver" android:exported="false" />
+        <receiver android:name=".AlertReceiver" android:exported="false" />
         <receiver android:name=".InstallResultReceiver" android:exported="false" />
         <receiver android:name=".WindowAlarmReceiver" android:exported="false" />
 

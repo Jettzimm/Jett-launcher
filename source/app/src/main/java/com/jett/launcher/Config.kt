@@ -158,6 +158,8 @@ object Config {
     // Overall size of everything on the home screen (1.0 = Android TV default; smaller = more
     // zoomed out). 0.8 = 20% smaller text, tiles and cards.
     const val UI_SCALE = 0.8f
+    // Close-game alerts also cover college games with a team ranked this high or better.
+    const val ALERT_TOP_RANK = 10
     // Apps per row in the Apple-TV-style grid (first row on the main page, scroll down for more).
     const val APPS_PER_ROW = 5
 

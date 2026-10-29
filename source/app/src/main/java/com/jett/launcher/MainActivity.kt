@@ -373,7 +373,9 @@ class MainActivity : Activity() {
             val ordered = early + games.filterNot { it in early }
             val ufc = try { Ufc.current() } catch (e: Exception) { null }
             // Nothing live and no morning shows: CNBC, ESPN, CNN.
-            val cards = if (ordered.isEmpty() && shows.isEmpty() && ufc == null) Config.ALWAYS_ON else shows
+            // No live game and no morning shows: lead with live channels (CNBC, ESPN, CNN) so
+            // there's always something on to click.
+            val cards = if (shows.isEmpty() && ordered.none { it.isLive }) Config.ALWAYS_ON else shows
             main.post { if (!isDestroyed && gen == sportsGen) showGames(ordered, cards, early.size, ufc) }   // newest only
         }
     }

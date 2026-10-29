@@ -40,7 +40,7 @@ object Config {
 
     // ------------------------------------------------------------ SPORTS BAR
     // Bar only appears when a game below is live or starts within this many minutes.
-    const val SHOW_BAR_MINUTES_BEFORE = 120
+    const val SHOW_BAR_MINUTES_BEFORE = 15
     const val MAX_GAMES_IN_BAR = 16
 
     // Pinned teams always sort to the front (ESPN abbreviations).

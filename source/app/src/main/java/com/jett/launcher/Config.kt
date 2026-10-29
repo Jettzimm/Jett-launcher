@@ -118,7 +118,7 @@ object Config {
         "CBS" to "QgitbnthKJI", "NBC" to "fIbKmfCLA9o", "FOX" to "qUyOvSNqmEQ",
         "ABC" to "ADhENjHS-8c", "The CW" to "ZGwdaZkS6EA", "CW" to "ZGwdaZkS6EA",
         "TBS" to "hna7JJwFnL0", "TNT" to "kAmuQECdZWY", "truTV" to "LH84hSCuuBQ",
-        "ESPN" to "gU7RkHiAN0s", "ESPN2" to "nIaQPNyNo34", "ESPNU" to "p0TOraK6Img",
+        "ESPN" to "bj3v-DQPnNs", "ESPN2" to "nIaQPNyNo34", "ESPNU" to "p0TOraK6Img",
         "ESPNEWS" to "hbYvuCKXj0Y", "SEC Network" to "iuDz6UdSjMo", "SECN" to "iuDz6UdSjMo",
         "ACC Network" to "VasWEa--oME", "ACCN" to "VasWEa--oME", "FS1" to "PIJjfw43Rao",
         "FS2" to "lc06tgwYNZs", "NBA TV" to "F3wVB3UuZGo", "NFL Network" to "WPuH0gnV73o",

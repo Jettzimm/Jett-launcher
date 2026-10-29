@@ -175,14 +175,16 @@ class MainActivity : Activity() {
         }
         pageInner.addView(moreApps, LinearLayout.LayoutParams(-1, -2))
 
-        // Photo location, bottom-right, shown in full-screen photo mode (like Apple TV).
+        // Photo location ("Kyoto, Japan") in an elegant serif. Always shown: top-right on the
+        // home screen (bottom-right would sit on top of the app tiles), bottom-right in
+        // full-screen photo mode, like Apple TV.
         caption = TextView(this).apply {
-            textSize = 15f; setTextColor(0xD9FFFFFF.toInt()); alpha = 0f
-            setShadowLayer(10f, 0f, 2f, 0x99000000.toInt()); letterSpacing = 0.02f
+            setTextColor(0xF2FFFFFF.toInt()); letterSpacing = 0.03f
+            setShadowLayer(14f, 0f, 2f, 0xB3000000.toInt())
+            typeface = captionFont()
         }
-        root.addView(caption, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
-            setMargins(0, 0, px(48), px(36))
-        })
+        caption.textSize = 22f
+        root.addView(caption, captionParams(ambientMode = false))
         backdrop.onCaption = { text -> caption.text = text }
 
         clock = TextView(this).apply {
@@ -215,6 +217,22 @@ class MainActivity : Activity() {
         appRow = row()
         col.addView(appRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(8) })
         return root
+    }
+
+    private fun captionFont(): Typeface = try {
+        Typeface.Builder(assets, "caption.ttf").setFontVariationSettings("'wght' 500").build()
+    } catch (e: Exception) { Typeface.create("serif", Typeface.ITALIC) }
+
+    private fun captionParams(ambientMode: Boolean) =
+        if (ambientMode) FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, px(56), px(40)) }
+        else FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(0, px(52), px(64), 0) }
+
+    private fun placeCaption(ambientMode: Boolean) {
+        caption.animate().alpha(0f).setDuration(250).withEndAction {
+            caption.layoutParams = captionParams(ambientMode)
+            caption.textSize = if (ambientMode) 30f else 22f
+            caption.animate().alpha(1f).setDuration(450).start()
+        }.start()
     }
 
     private fun sectionLabel(t: String) = TextView(this).apply {
@@ -580,7 +598,7 @@ class MainActivity : Activity() {
         } else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         content.animate().alpha(if (on) 0f else 1f).setDuration(600).start()
         backdrop.setAmbient(on)
-        caption.animate().alpha(if (on) 1f else 0f).setDuration(600).start()
+        placeCaption(on)
         if (!on) refreshSports()
     }
 

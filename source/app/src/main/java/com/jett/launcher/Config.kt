@@ -149,7 +149,7 @@ object Config {
     // ------------------------------------------------------------ BACKGROUND
     // Photos live in app/src/main/assets/bg/<dawn|morning|midday|golden|dusk|night>/.
     // Add or delete .jpg files there to change what shows. The set follows the real sun.
-    const val PHOTO_ROTATE_MINUTES = 3L
+    const val PHOTO_ROTATE_MINUTES = 2L
     // Home screen untouched this long → full-screen photos (like Apple TV's screensaver).
     const val IDLE_TO_PHOTOS_SECONDS = 120L
     const val PHOTO_FADE_MS = 2500L

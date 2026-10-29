@@ -230,7 +230,7 @@ class MainActivity : Activity() {
     private fun placeCaption(ambientMode: Boolean) {
         caption.animate().alpha(0f).setDuration(250).withEndAction {
             caption.layoutParams = captionParams(ambientMode)
-            caption.textSize = if (ambientMode) 30f else 22f
+            caption.textSize = if (ambientMode) 24f else 22f
             caption.animate().alpha(1f).setDuration(450).start()
         }.start()
     }

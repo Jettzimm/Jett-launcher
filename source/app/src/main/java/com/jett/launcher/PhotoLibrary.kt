@@ -72,7 +72,9 @@ object PhotoLibrary {
         val base = manifest.optString("base").let { if (it.endsWith("/")) it else "$it/" }
         if (!base.startsWith("https://")) return true
         val lists = manifest.optJSONObject("photos") ?: return true
-        val captions = JSONObject()
+        // Start from the current captions, so photos kept on disk (e.g. a time of day missing from
+        // this list) keep their locations; this list's entries overwrite.
+        val captions = try { JSONObject(File(dir(ctx), "captions.json").readText()) } catch (e: Exception) { JSONObject() }
         val wanted = PHASES.associateWith { p ->
             val arr = lists.optJSONArray(p) ?: return@associateWith emptySet<String>()
             (0 until arr.length()).mapNotNull { i ->
@@ -94,6 +96,7 @@ object PhotoLibrary {
         for (p in PHASES) {
             val folder = File(root, p).apply { mkdirs() }
             val want = wanted.getValue(p)
+            if (want.isEmpty()) continue   // a time of day missing from the list: leave its photos alone
             // Remove photos dropped from the library (and leftovers from interrupted downloads).
             folder.listFiles()?.forEach { f ->
                 if (!f.name.endsWith(".webp") || f.name.removeSuffix(".webp") !in want) f.delete()

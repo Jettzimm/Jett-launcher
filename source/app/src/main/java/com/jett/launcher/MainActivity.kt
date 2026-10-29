@@ -54,6 +54,8 @@ class MainActivity : Activity() {
         @Volatile var lastKeyAt = 0L
         /** The home screen is the top screen (still true while the TV is off with it showing). */
         @Volatile var homeOnTop = false
+        /** A home screen exists in this process (created and not destroyed). */
+        @Volatile var alive = false
     }
     private var resumed = false
     private var lastAppsSignature = ""
@@ -69,22 +71,29 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        alive = true
         dp = resources.displayMetrics.density
         setContentView(buildUi())
         registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_ON))
         Rules.scheduleNflCheck(this)
         WindowAlarm.scheduleNext(this)
         Updater.scheduleDaily(this)
-        // Only a real boot counts as a power-on — not a restart after an update or Home press.
-        if (android.os.SystemClock.elapsedRealtime() < 5 * 60_000L) PowerOn.onWake(this)
+        // A real boot counts as a power-on. So does the TV waking into a freshly restarted app
+        // (Android had closed it during standby), since that TV-on signal went out before we existed.
+        val freshProcess = android.os.SystemClock.elapsedRealtime() - android.os.Process.getStartElapsedRealtime() < 30_000L
+        val screenOn = getSystemService(android.os.PowerManager::class.java).isInteractive
+        if (android.os.SystemClock.elapsedRealtime() < 5 * 60_000L || (freshProcess && screenOn)) PowerOn.onWake(this)
     }
 
     override fun onResume() {
         super.onResume()
-        resumed = true; onHome = true; homeOnTop = true; lastKeyAt = System.currentTimeMillis()
+        resumed = true; onHome = true; homeOnTop = true
+        // Resumed by a background restore while the TV is off? Not you using the home screen.
+        val screenOn = getSystemService(android.os.PowerManager::class.java).isInteractive
+        if (screenOn) lastKeyAt = System.currentTimeMillis()
         backdrop.tick()
         updateClock()
-        io.execute { Updater.refreshChannelsIfStale(this); Updater.confirmIfNeeded(this) }
+        io.execute { Updater.refreshChannelsIfStale(this); if (screenOn) Updater.confirmIfNeeded(this) }
         buildAppRow()
         refreshSports()
         main.post(clockTick); main.postDelayed(sportsTick, 60_000)
@@ -102,6 +111,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        alive = false
         unregisterReceiver(screenReceiver); io.shutdownNow(); super.onDestroy()
     }
 
@@ -465,12 +475,12 @@ class MainActivity : Activity() {
     private fun loadLogo(url: String, into: ImageView) {
         logoCache[url]?.let { into.setImageBitmap(it); return }
         io.execute {
-            val bmp = try {
+            val small = try {
                 val c = URL(url).openConnection().apply { connectTimeout = 6000; readTimeout = 8000 }
-                c.getInputStream().use { BitmapFactory.decodeStream(it) }
+                val bmp = c.getInputStream().use { BitmapFactory.decodeStream(it) }
+                bmp?.let { Bitmap.createScaledBitmap(it, 96, (96 * it.height / it.width.coerceAtLeast(1)).coerceAtLeast(1), true) }
             } catch (e: Exception) { null }
-            if (bmp != null) {
-                val small = Bitmap.createScaledBitmap(bmp, 96, 96 * bmp.height / bmp.width.coerceAtLeast(1), true)
+            if (small != null) {
                 logoCache[url] = small
                 main.post { into.setImageBitmap(small) }
             }

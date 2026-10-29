@@ -45,15 +45,16 @@ object Updater {
         val now = ZonedDateTime.now(Config.ZONE)
         var next = now.withHour(Config.UPDATE_CHECK_HOUR).withMinute(7).withSecond(0).withNano(0)
         if (!next.isAfter(now)) next = next.plusDays(1)
-        val pi = PendingIntent.getBroadcast(ctx, 7, Intent(ctx, UpdateReceiver::class.java).setAction(ACTION_CHECK),
+        val pi = PendingIntent.getBroadcast(ctx, 7, Intent(ctx, UpdateAlarmReceiver::class.java).setAction(ACTION_CHECK),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        ctx.getSharedPreferences("alarms", Context.MODE_PRIVATE).edit().putLong("update", next.toInstant().toEpochMilli()).apply()
         ctx.getSystemService(AlarmManager::class.java)
             .setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.toInstant().toEpochMilli(), pi)
     }
 
     /**
      * Network work — call off the main thread. Saves fresh channel codes; if there's a newer
-     * version, queues its download (a background job, so a slow 95MB download can't be cut off).
+     * version, queues its download (a background job, so a slow 47MB download can't be cut off).
      */
     fun check(ctx: Context) {
         val feedUrl = Config.UPDATE_FEED_URL
@@ -114,7 +115,15 @@ object Updater {
         val part = File(ctx.filesDir, "update.part")
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.instanceFollowRedirects = true; conn.connectTimeout = 15_000; conn.readTimeout = 60_000
-        if (conn.responseCode != 200) { conn.disconnect(); return false }   // retry later
+        if (conn.responseCode != 200) {
+            val code = conn.responseCode; conn.disconnect()
+            // A broken link (404 etc.) counts toward the 3-strikes limit; rate limits / outages don't.
+            // At most one strike per hour, so a feed published a few minutes before its APK isn't written off.
+            val now = System.currentTimeMillis()
+            if (code in 400..499 && code != 429 && now - prefs.getLong("strikeAt_$v", 0) > 3600_000L)
+                prefs.edit().putInt("fails_$v", prefs.getInt("fails_$v", 0) + 1).putLong("strikeAt_$v", now).apply()
+            return false
+        }
         val expected = conn.contentLengthLong
         conn.inputStream.use { input -> part.outputStream().use { input.copyTo(it) } }
         // Reject partial downloads and error pages (a real APK is a zip: starts with "PK").
@@ -227,8 +236,11 @@ class UpdateDownloadJob : android.app.job.JobService() {
     override fun onStopJob(params: android.app.job.JobParameters) = true
 }
 
-class UpdateReceiver : BroadcastReceiver() {
+open class UpdateReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
+        // Exported one: system signals only. Our own alarms go to the private UpdateAlarmReceiver.
+        val mine = intent.action == Updater.ACTION_CHECK || intent.action == HomeRestore.ACTION
+        if (mine != (this is UpdateAlarmReceiver)) return
         when (intent.action) {
             // Just updated itself: the app was restarted; re-arm everything so the TV-on listener
             // and alarms are live before the next power-on.
@@ -258,6 +270,9 @@ class UpdateReceiver : BroadcastReceiver() {
         }
     }
 }
+
+/** Private (not exported) target for the update-check and home-restore alarms. */
+class UpdateAlarmReceiver : UpdateReceiver()
 
 /** Install results. Not exported: only the system installer (via our PendingIntent) reaches it. */
 class InstallResultReceiver : BroadcastReceiver() {
@@ -304,18 +319,22 @@ object HomeRestore {
     const val ACTION = "com.jett.launcher.HOME_RESTORE"
     fun run(ctx: Context) {
         val prefs = ctx.getSharedPreferences("updater", Context.MODE_PRIVATE)
-        if (MainActivity.homeOnTop) { prefs.edit().remove("restoreTries").apply(); return }
+        // A home screen exists in this process (on top or not): Android already treats us as the
+        // home app, nothing to restore.
+        if (MainActivity.alive) { prefs.edit().remove("restoreTries").apply(); return }
         if (!ctx.getSystemService(PowerManager::class.java).isInteractive) {
+            // Android can block this silently, so don't assume it worked: the follow-up alarm
+            // below re-checks (and stops once the home screen exists).
             try {
                 ctx.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
                     .setPackage(ctx.packageName).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                prefs.edit().remove("restoreTries").apply(); return
             } catch (e: Exception) { Log.w("JettUpdater", "Home restore failed", e) }
         }
+        // TV on: retry every 10 min for up to a day (other alarms keep calling this after that).
         val tries = prefs.getInt("restoreTries", 0)
-        if (tries >= 144) { prefs.edit().remove("restoreTries").apply(); return }
+        if (tries >= 144) return
         prefs.edit().putInt("restoreTries", tries + 1).apply()
-        val pi = PendingIntent.getBroadcast(ctx, 9, Intent(ctx, UpdateReceiver::class.java).setAction(ACTION),
+        val pi = PendingIntent.getBroadcast(ctx, 9, Intent(ctx, UpdateAlarmReceiver::class.java).setAction(ACTION),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         ctx.getSystemService(AlarmManager::class.java)
             .setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 10 * 60_000L, pi)

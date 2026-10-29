@@ -69,8 +69,11 @@ object Rules {
     private fun isSundayAfternoon(g: Game) =
         g.start.atZone(ZONE).dayOfWeek == Config.NFL_SUNDAY && g.start.atZone(ZONE).hour in 12..17
 
-    /** Among games that could be switched to: the Dolphins' first, then the earliest. */
+    /** Among games about to start: the Dolphins' first, then the earliest. (A live game is never
+     *  interrupted, even for the Dolphins — it stays the target until it ends.) */
     private val PICK = compareByDescending<Game> { it.pinned }.thenBy { it.start }
+    /** Live games: the one that started first stays (ties → the Dolphins). */
+    private val LIVE_PICK = compareBy<Game> { it.start }.thenByDescending { it.pinned }
 
     /** Games today that can trigger a switch: playoffs, Sunday afternoon (RedZone), night games. */
     fun watched(today: List<Game>) = today.filter { it.seasonType == 3 || isNight(it) || isSundayAfternoon(it) }
@@ -95,22 +98,29 @@ object Rules {
         // (never pulled away mid-game); the next game takes over once it's over.
         if (today.any { it.seasonType == 3 }) {
             val playoff = today.filter { it.seasonType == 3 }
-            val g = (playoff.filter { it.state == "in" }.minWithOrNull(PICK)
+            val g = (playoff.filter { it.state == "in" }.minWithOrNull(LIVE_PICK)
                 ?: playoff.filter { startsWithin(it, Config.PLAYOFF_SWITCH_MINUTES_BEFORE) }.minWithOrNull(PICK))
                 ?: return null
             val ch = channelOf(g, "CBS")
             return AutoTarget("playoff_${g.id}", "${g.awayAbbr} @ ${g.homeAbbr} on $ch", ch)
         }
-        // Sunday afternoon: RedZone while any afternoon game is still on.
+        // Sunday afternoon: RedZone while any afternoon game is still on (but not while a London
+        // morning game is still being played — that one finishes first).
         if (now.dayOfWeek == Config.NFL_SUNDAY && now.hour >= Config.REDZONE_START_HOUR &&
             today.any { isSundayAfternoon(it) && it.state != "post" }
-        ) return AutoTarget("redzone", "NFL RedZone", Config.REDZONE_CHANNEL)
+        ) {
+            if (today.any { it.state == "in" && it.start.atZone(ZONE).hour < 12 }) return null
+            return AutoTarget("redzone", "NFL RedZone", Config.REDZONE_CHANNEL)
+        }
 
         // Night game. Sundays switch as soon as RedZone ends (the pregame show); other nights just
         // before kickoff. Monday doubleheader: a live game stays the target (game 1 is never
         // interrupted); once it ends, the next one is offered.
         val night = today.filter { isNight(it) && it.state != "post" }
-        val g = (night.filter { it.state == "in" }.minWithOrNull(PICK)
+        // A late-afternoon game still going (Saturday 5pm, Thanksgiving/Christmas OT): don't pull
+        // you off it before it ends; the night game is offered as soon as it does.
+        if (today.any { !isNight(it) && it.state == "in" }) return null
+        val g = (night.filter { it.state == "in" }.minWithOrNull(LIVE_PICK)
             ?: (if (now.dayOfWeek == Config.NFL_SUNDAY && now.hour >= Config.REDZONE_START_HOUR) night
                 else night.filter { startsWithin(it, Config.NIGHT_SWITCH_MINUTES_BEFORE) }).minWithOrNull(PICK))
             ?: return null
@@ -134,10 +144,11 @@ object Rules {
     fun schedule(ctx: Context, at: ZonedDateTime) {
         val am = ctx.getSystemService(AlarmManager::class.java)
         val pi = PendingIntent.getBroadcast(
-            ctx, 1, Intent(ctx, RuleReceiver::class.java).setAction(ACTION_NFL_CHECK),
+            ctx, 1, Intent(ctx, RuleAlarmReceiver::class.java).setAction(ACTION_NFL_CHECK),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val t = at.toInstant().toEpochMilli()
+        ctx.getSharedPreferences("alarms", Context.MODE_PRIVATE).edit().putLong("nfl", t).apply()
         if (Build.VERSION.SDK_INT >= 31 && !am.canScheduleExactAlarms()) {
             am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, t, pi)
         } else {
@@ -156,6 +167,10 @@ object Rules {
         return prefs.getString("done_${target.id}", null) == sessionKey(target, sessionKey)
     }
 
+    fun unmark(ctx: Context, id: String) {
+        ctx.getSharedPreferences("rules", Context.MODE_PRIVATE).edit().remove("done_$id").apply()
+    }
+
     fun markDone(ctx: Context, target: AutoTarget, sessionKey: String) {
         ctx.getSharedPreferences("rules", Context.MODE_PRIVATE).edit()
             .putString("done_${target.id}", sessionKey(target, sessionKey)).apply()
@@ -168,6 +183,7 @@ object Rules {
             Intent(ctx, CountdownActivity::class.java)
                 .putExtra("title", target.title)
                 .putExtra("channel", target.channel)
+                .putExtra("id", target.id)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
     }
@@ -177,9 +193,13 @@ object Rules {
  * NFL checks: once a day at noon; on days with watched games, every 5 minutes from shortly
  * before the first kickoff until the last watched game ends. Off days cost one small request.
  */
-class RuleReceiver : BroadcastReceiver() {
+open class RuleReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
-        if (intent.action != Rules.ACTION_NFL_CHECK && intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        // The exported receiver only takes the system's boot signal; our own alarms go to the
+        // private RuleAlarmReceiver, so no other app can trigger checks.
+        val ok = if (this is RuleAlarmReceiver) intent.action == Rules.ACTION_NFL_CHECK
+                 else intent.action == Intent.ACTION_BOOT_COMPLETED
+        if (!ok) return
         val pending = goAsync()
         Thread {
             val now = ZonedDateTime.now(Config.ZONE)
@@ -208,6 +228,9 @@ class RuleReceiver : BroadcastReceiver() {
         }.start()
     }
 }
+
+/** Private (not exported) target for the NFL-check alarms. */
+class RuleAlarmReceiver : RuleReceiver()
 
 /** "Switching to RedZone in 10… press Back to stay." */
 class CountdownActivity : Activity() {
@@ -287,7 +310,13 @@ class CountdownActivity : Activity() {
     override fun onStop() {
         super.onStop()
         // Home pressed during the countdown: cancel, don't switch from the background.
-        if (!isFinishing) { handler.removeCallbacksAndMessages(null); finish() }
+        if (!isFinishing) {
+            handler.removeCallbacksAndMessages(null)
+            // TV turned off mid-countdown (not your choice): offer it again next time.
+            if (!getSystemService(PowerManager::class.java).isInteractive)
+                intent.getStringExtra("id")?.let { Rules.unmark(this, it) }
+            finish()
+        }
     }
 
     override fun onDestroy() { handler.removeCallbacksAndMessages(null); super.onDestroy() }

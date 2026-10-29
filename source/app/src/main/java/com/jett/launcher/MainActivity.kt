@@ -230,7 +230,7 @@ class MainActivity : Activity() {
 
     private fun scroller(child: View) = HorizontalScrollView(this).apply {
         isHorizontalScrollBarEnabled = false; clipChildren = false; clipToPadding = false
-        isFillViewport = false
+        isFillViewport = true   // lets a short row be centered
         addView(child)
     }
 
@@ -399,6 +399,18 @@ class MainActivity : Activity() {
         rest.filter { it.pinned }.forEach { addGameCard(it, r) }
         ufc?.let { addFightCard(it, r) }
         rest.filterNot { it.pinned }.forEach { addGameCard(it, r) }
+        // A few cards: spread them evenly across the screen, centered. Many: scroll as before.
+        val n = sportsRow.childCount
+        if (n in 1..4) {
+            val gap = px(26)
+            val usable = resources.displayMetrics.widthPixels - px(64) * 2 - px(8) * 2
+            val w = minOf(px(360), (usable - gap * (n - 1)) / n)
+            for (i in 0 until n) (sportsRow.getChildAt(i).layoutParams as LinearLayout.LayoutParams).apply {
+                width = w; marginEnd = if (i < n - 1) gap else 0
+            }
+            sportsRow.gravity = Gravity.CENTER_HORIZONTAL
+        } else sportsRow.gravity = Gravity.START
+        sportsRow.requestLayout()
         focusedIndex?.let { sportsRow.getChildAt(it.coerceAtMost(sportsRow.childCount - 1))?.requestFocus() }
     }
 

@@ -108,14 +108,29 @@ object Config {
     // fallback. Find a code: tv.youtube.com on a computer → Live → click the channel →
     // copy the part after /watch/ in the address bar.
     // A missing or empty code just opens YouTube TV's home screen.
-    // "app" = watch/<code> sent to YouTube TV's main screen (reported working on Android TV);
-    // "web" = https://tv.youtube.com/watch/<code>. Either falls back to the other.
-    const val YTTV_LINK_STYLE = "app"
+    // "web" = https://tv.youtube.com/watch/<code> (tested on this box: tunes the channel).
+    // "app" = watch/<code> to YouTube TV's main screen (on this box it only opens the app home).
+    const val YTTV_LINK_STYLE = "web"
 
+    // Built-in copy of the codes read from Jett's YouTube TV guide (Oct 29, 2026, NYC lineup);
+    // the feed's list overrides these when YouTube changes one.
     val YTTV_CHANNEL_CODES = mapOf(
-        "ESPN" to "", "ESPN2" to "", "NFL RedZone" to "", "NFL Network" to "",
-        "NBC" to "", "CBS" to "", "FOX" to "", "ABC" to "", "FS1" to "",
-        "CNBC" to "", "CNN" to "", "SEC Network" to "", "BTN" to "",
+        "CBS" to "QgitbnthKJI", "NBC" to "fIbKmfCLA9o", "FOX" to "qUyOvSNqmEQ",
+        "ABC" to "ADhENjHS-8c", "The CW" to "ZGwdaZkS6EA", "CW" to "ZGwdaZkS6EA",
+        "TBS" to "hna7JJwFnL0", "TNT" to "kAmuQECdZWY", "truTV" to "LH84hSCuuBQ",
+        "ESPN" to "gU7RkHiAN0s", "ESPN2" to "nIaQPNyNo34", "ESPNU" to "p0TOraK6Img",
+        "ESPNEWS" to "hbYvuCKXj0Y", "SEC Network" to "iuDz6UdSjMo", "SECN" to "iuDz6UdSjMo",
+        "ACC Network" to "VasWEa--oME", "ACCN" to "VasWEa--oME", "FS1" to "PIJjfw43Rao",
+        "FS2" to "lc06tgwYNZs", "NBA TV" to "F3wVB3UuZGo", "NFL Network" to "WPuH0gnV73o",
+        "NFL NET" to "WPuH0gnV73o", "BTN" to "tUwIbNAQ6yU", "Big Ten Network" to "tUwIbNAQ6yU",
+        "CBS Sports Network" to "fGRTFzKDNAc", "CBSSN" to "fGRTFzKDNAc",
+        "Golf Channel" to "f4VYXRthuQI", "USA Network" to "Qi_C4zyXBIg", "USA" to "Qi_C4zyXBIg",
+        "USA Net" to "Qi_C4zyXBIg", "CNBC" to "I-7YWn-wtFA", "CNN" to "AW9-z6zluec",
+        "Fox News" to "q5TBgD8fyG8", "FNC" to "q5TBgD8fyG8", "FOX Business" to "8lamVOKuXtQ",
+        "MSNBC" to "VlWoYVR-sj0", "MS NOW" to "VlWoYVR-sj0", "Telemundo" to "VZ_O4CWiKNY",
+        "Univision" to "K0EUH8k7JZM", "ABC News Live" to "bm_DB8-y0sU",
+        "NBC News NOW" to "ApPDaqv6EvE", "The Weather Channel" to "AERMXq8CBCQ",
+        "NFL RedZone" to "JCZl8GHvkko", "RedZone" to "JCZl8GHvkko",
     )
 
     // ------------------------------------------------------------- UPDATES

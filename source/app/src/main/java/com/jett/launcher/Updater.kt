@@ -64,7 +64,7 @@ object Updater {
             val feed = JSONObject(Sports.httpGet("$feedUrl?t=${System.currentTimeMillis() / 60_000}"))
             val e = prefs.edit()
             feed.optJSONObject("channels")?.let { ch -> ch.keys().forEach { k -> e.putString("ch_$k", ch.optString(k)) } }
-            e.putLong("lastFeed", System.currentTimeMillis())
+            e.putLong("lastFeed", System.currentTimeMillis()).putBoolean("feedFailed", false)
             feed.optString("linkStyle").takeIf { it == "app" || it == "web" }?.let { e.putString("linkStyle", it) }
             val remote = feed.optInt("versionCode", 0)
             val apk = feed.optString("apk")
@@ -79,13 +79,20 @@ object Updater {
             try {
                 feed.optString("photos").takeIf { it.isNotEmpty() }?.let { PhotoLibrary.onFeed(ctx, it, feed.optInt("photosVersion", 0)) }
             } catch (ex: Exception) { Log.w(TAG, "Photo library check failed", ex) }
-        } catch (e: Exception) { Log.w(TAG, "Update check failed", e) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Update check failed", e)
+            // e.g. Wi-Fi not up yet right after boot: retry on the next home-screen visit.
+            prefs.edit().putBoolean("feedFailed", true).putLong("feedAttempt", System.currentTimeMillis()).apply()
+        }
     }
 
     /** Refresh at most every 6 hours (cheap, called on each home-screen visit while the TV is on). */
     fun refreshChannelsIfStale(ctx: Context) {
-        val last = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong("lastFeed", 0)
-        if (System.currentTimeMillis() - last > 6 * 3600_000L) check(ctx)
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val stale = now - prefs.getLong("lastFeed", 0) > 6 * 3600_000L
+        val retry = prefs.getBoolean("feedFailed", false) && now - prefs.getLong("feedAttempt", 0) > 2 * 60_000L
+        if (stale || retry) check(ctx)
     }
 
     private fun localVersion(ctx: Context) = ctx.packageManager.getPackageInfo(ctx.packageName, 0).longVersionCode
@@ -250,6 +257,9 @@ open class UpdateReceiver : BroadcastReceiver() {
                 if (prefs.getInt("readyVersion", 0) <= local) { Updater.readyFile(ctx).delete(); prefs.edit().remove("readyVersion").apply() }
                 Sleep.rearm(ctx); WindowAlarm.scheduleNext(ctx); Rules.scheduleNflCheck(ctx); Updater.scheduleDaily(ctx)
                 HomeRestore.run(ctx)
+                // Fresh version: pick up the latest channel codes right away.
+                val pending = goAsync()
+                Thread { try { Updater.check(ctx) } catch (e: Exception) { } finally { pending.finish() } }.start()
             }
             HomeRestore.ACTION -> HomeRestore.run(ctx)
             Updater.ACTION_CHECK, Intent.ACTION_BOOT_COMPLETED -> {

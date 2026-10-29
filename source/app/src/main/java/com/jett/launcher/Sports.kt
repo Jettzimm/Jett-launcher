@@ -22,6 +22,7 @@ data class Game(
     val localNetworks: List<String>,
     val pinned: Boolean,
     val seasonType: Int = 2,    // 2 regular season, 3 postseason (ESPN)
+    val awayName: String = "", val homeName: String = "",   // "Panthers", "Packers"
 ) {
     val isLive get() = state == "in"
     val allNetworks get() = nationalNetworks + localNetworks
@@ -108,6 +109,8 @@ object Sports {
                 nationalNetworks = national, localNetworks = local,
                 pinned = abbr(home) in pinnedSet || abbr(away) in pinnedSet,
                 seasonType = ev.optJSONObject("season")?.optInt("type") ?: 2,
+                awayName = away.optJSONObject("team")?.optString("shortDisplayName").orEmpty(),
+                homeName = home.optJSONObject("team")?.optString("shortDisplayName").orEmpty(),
             )
         } catch (e: Exception) {
             // One malformed event (TBD/postponed) shouldn't drop the whole league.

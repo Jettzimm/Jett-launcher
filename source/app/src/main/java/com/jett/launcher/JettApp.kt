@@ -15,6 +15,7 @@ import android.os.Looper
 class JettApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        Rules.appContext = applicationContext
         // Started in the background (alarm, job) with the TV off: bring the home screen back so
         // Android treats the launcher as the active home app (and keeps TV-on signals flowing).
         try { if (!getSystemService(android.os.PowerManager::class.java).isInteractive) HomeRestore.run(this) }
@@ -83,6 +84,7 @@ object PowerOn {
             if (Rules.alreadyDone(app, target, Rules.today())) return@Thread
             // TV turned back off while we were checking: offer it next time instead.
             if (!pm.isInteractive || System.currentTimeMillis() - now > 60_000) return@Thread
+            try { Updater.refreshIfOlder(app, 20 * 60_000L) } catch (e: Exception) { }
             Rules.markDone(app, target, Rules.today())   // so the Sunday poller doesn't repeat it
             Handler(Looper.getMainLooper()).post { Rules.showCountdown(app, target) }
         }.start()

@@ -73,6 +73,17 @@ object Router {
     }
 
     fun openGame(ctx: Context, game: Game) {
+        // Prime-only game (Thursday night etc.): straight to the game's page in Prime.
+        if (Prime.isPrime(game) && game.nationalNetworks.none { appForNetwork(it, null) == "yttv" }) {
+            val app = ctx.applicationContext
+            Thread {
+                val link = Prime.gtiFor(app, game)?.let { Prime.link(it) }
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    if (link == null || !Prime.open(app, link)) openApp(app, "prime")
+                }
+            }.start()
+            return
+        }
         // 1) A national network YouTube TV carries → YouTube TV on that channel.
         // 2) A streaming-only national broadcast (Prime, Peacock, ESPN+) → that app.
         // 3) Local/regional networks the same way. 4) League fallback (NHL → ESPN+).

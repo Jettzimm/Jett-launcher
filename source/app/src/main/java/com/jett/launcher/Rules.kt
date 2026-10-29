@@ -23,7 +23,7 @@ import java.time.format.DateTimeFormatter
 import java.time.temporal.TemporalAdjusters
 
 /** Something the TV should be showing right now. */
-data class AutoTarget(val id: String, val title: String, val channel: String)
+data class AutoTarget(val id: String, val title: String, val channel: String, val link: String? = null)
 
 object Rules {
 
@@ -79,6 +79,14 @@ object Rules {
     fun watched(today: List<Game>) = today.filter { it.seasonType == 3 || isNight(it) || isSundayAfternoon(it) }
 
     /** The channel to switch to: a YouTube TV network if any, else the first listed (Prime etc.). */
+    /** Prime-only game (e.g. Thursday night): a direct link to it, when Prime's search finds it. */
+    @Volatile var appContext: Context? = null
+    private fun primeLink(g: Game): String? {
+        val ctx = appContext ?: return null
+        if (!Prime.isPrime(g) || channelOf(g, "") .let { Router.appForNetwork(it, null) } == "yttv") return null
+        return Prime.gtiFor(ctx, g)?.let { Prime.link(it) }
+    }
+
     private fun channelOf(g: Game, default: String): String {
         val nets = g.nationalNetworks
         return Router.normalize(nets.firstOrNull { Router.appForNetwork(it, null) == "yttv" } ?: nets.firstOrNull() ?: default)
@@ -102,7 +110,7 @@ object Rules {
                 ?: playoff.filter { startsWithin(it, Config.PLAYOFF_SWITCH_MINUTES_BEFORE) }.minWithOrNull(PICK))
                 ?: return null
             val ch = channelOf(g, "CBS")
-            return AutoTarget("playoff_${g.id}", "${g.awayAbbr} @ ${g.homeAbbr} on $ch", ch)
+            return AutoTarget("playoff_${g.id}", "${g.awayAbbr} @ ${g.homeAbbr} on $ch", ch, primeLink(g))
         }
         // Sunday afternoon: RedZone while any afternoon game is still on (but not while a London
         // morning game is still being played — that one finishes first).
@@ -125,7 +133,7 @@ object Rules {
                 else night.filter { startsWithin(it, Config.NIGHT_SWITCH_MINUTES_BEFORE) }).minWithOrNull(PICK))
             ?: return null
         val ch = channelOf(g, g.localNetworks.firstOrNull() ?: "NBC")
-        return AutoTarget("night_${g.id}", "${g.awayAbbr} @ ${g.homeAbbr} on $ch", ch)
+        return AutoTarget("night_${g.id}", "${g.awayAbbr} @ ${g.homeAbbr} on $ch", ch, primeLink(g))
     }
 
     // ------------------------------------------------------------- alarms
@@ -184,6 +192,7 @@ object Rules {
                 .putExtra("title", target.title)
                 .putExtra("channel", target.channel)
                 .putExtra("id", target.id)
+                .putExtra("link", target.link)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
     }
@@ -212,6 +221,7 @@ open class RuleReceiver : BroadcastReceiver() {
                 val target = Rules.nflTarget(now, today)
                 val awake = ctx.getSystemService(PowerManager::class.java).isInteractive
                 if (target != null && awake && !Rules.alreadyDone(ctx, target, Rules.today())) {
+                    try { Updater.refreshIfOlder(ctx, 20 * 60_000L) } catch (e: Exception) { }
                     Rules.markDone(ctx, target, Rules.today())
                     Handler(Looper.getMainLooper()).post { Rules.showCountdown(ctx, target) }
                 }
@@ -295,7 +305,8 @@ class CountdownActivity : Activity() {
 
     private fun go() {
         handler.removeCallbacksAndMessages(null)
-        Router.openChannel(this, channel)
+        val link = intent.getStringExtra("link")
+        if (link == null || !Prime.open(this, link)) Router.openChannel(this, channel)
         finish()
     }
 

@@ -87,6 +87,13 @@ object Updater {
     }
 
     /** Refresh at most every 6 hours (cheap, called on each home-screen visit while the TV is on). */
+    /** Before an auto-switch: make sure channel codes are at most [maxAgeMs] old (a fixed code
+     *  pushed on a Sunday reaches the box before the very next switch). */
+    fun refreshIfOlder(ctx: Context, maxAgeMs: Long) {
+        val last = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong("lastFeed", 0)
+        if (System.currentTimeMillis() - last > maxAgeMs) check(ctx)
+    }
+
     fun refreshChannelsIfStale(ctx: Context) {
         val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()

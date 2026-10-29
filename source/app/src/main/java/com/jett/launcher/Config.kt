@@ -139,6 +139,13 @@ object Config {
     const val IDLE_TO_PHOTOS_SECONDS = 120L
     const val PHOTO_FADE_MS = 2500L
 
+    // ---------------------------------------------------------------- LAYOUT
+    // Overall size of everything on the home screen (1.0 = Android TV default; smaller = more
+    // zoomed out). 0.8 = 20% smaller text, tiles and cards.
+    const val UI_SCALE = 0.8f
+    // Apps per row in the Apple-TV-style grid (first row on the main page, scroll down for more).
+    const val APPS_PER_ROW = 5
+
     // --------------------------------------------------------- MORNING SHOWS
     // Mornings, the bar leads with three live TV cards. Each "slot" is one card: it shows
     // the first show in its list that's on air right now. Empty slots are filled from the

@@ -38,6 +38,10 @@ class MainActivity : Activity() {
     private lateinit var backdrop: Backdrop
     private lateinit var caption: TextView
     private lateinit var content: View
+    private lateinit var page: ScrollView
+    private lateinit var moreApps: LinearLayout
+    /** Every app-grid tile in order (first row + the rows below). */
+    private val gridTiles = mutableListOf<View>()
     private lateinit var sportsLabel: TextView
     private var ambient = false
     private lateinit var clock: TextView
@@ -68,6 +72,13 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------------ lifecycle
+
+    /** Zoom the whole home screen out (Config.UI_SCALE) by drawing it at a lower density. */
+    override fun attachBaseContext(base: Context) {
+        val c = android.content.res.Configuration(base.resources.configuration)
+        c.densityDpi = (c.densityDpi * Config.UI_SCALE).toInt()
+        super.attachBaseContext(base.createConfigurationContext(c))
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -117,7 +128,10 @@ class MainActivity : Activity() {
 
     // Home screen: Back does nothing. Pressing Home while already home jumps to the first app.
     override fun onBackPressed() {}
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); if (ambient) setAmbient(false); appRow.getChildAt(0)?.requestFocus() }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent); if (ambient) setAmbient(false)
+        page.scrollTo(0, 0); appRow.getChildAt(0)?.requestFocus()   // Home: back to the top
+    }
 
     private val clockTick = object : Runnable {
         override fun run() { updateClock(); backdrop.tick(); main.postDelayed(this, 20_000) }
@@ -136,13 +150,30 @@ class MainActivity : Activity() {
         backdrop = Backdrop(this)
         root.addView(backdrop, FrameLayout.LayoutParams(-1, -1))
 
+        // The page scrolls like Apple TV: the first screen is the clock, the bar and the first row
+        // of apps; pressing Down from there scrolls up into the rest of the app grid.
+        page = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false; isFillViewport = true; clipChildren = false
+            overScrollMode = View.OVER_SCROLL_NEVER; isSmoothScrollingEnabled = true
+        }
+        val pageInner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false
+        }
+        page.addView(pageInner, FrameLayout.LayoutParams(-1, -2))
+        root.addView(page, FrameLayout.LayoutParams(-1, -1))
+        content = page
+
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(px(64), px(44), px(64), px(36))
+            setPadding(px(64), px(44), px(64), px(28))
             clipChildren = false; clipToPadding = false
         }
-        root.addView(col, FrameLayout.LayoutParams(-1, -1))
-        content = col
+        pageInner.addView(col, LinearLayout.LayoutParams(-1, resources.displayMetrics.heightPixels))
+        moreApps = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false
+            setPadding(px(64), 0, px(64), px(64))
+        }
+        pageInner.addView(moreApps, LinearLayout.LayoutParams(-1, -2))
 
         // Photo location, bottom-right, shown in full-screen photo mode (like Apple TV).
         caption = TextView(this).apply {
@@ -182,7 +213,7 @@ class MainActivity : Activity() {
         col.addView(sportsSection)
 
         appRow = row()
-        col.addView(scroller(appRow).apply { setPadding(0, px(14), 0, 0) })
+        col.addView(appRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(8) })
         return root
     }
 
@@ -232,6 +263,13 @@ class MainActivity : Activity() {
         v.isFocusable = true; v.isClickable = true
         v.setOnClickListener { onClick() }
         v.setOnFocusChangeListener { view, has ->
+            // Back on the first screen (bar or first app row): show the whole thing again.
+            if (has && (view.parent === appRow || view.parent === sportsRow)) page.smoothScrollTo(0, 0)
+            else if (has && view.parent?.parent === moreApps) {
+                // Scroll so the focused row sits comfortably in view.
+                val rowTop = (view.parent as View).top + moreApps.top
+                page.smoothScrollTo(0, (rowTop - px(120)).coerceAtLeast(0))
+            }
             view.animate().scaleX(if (has) 1.1f else 1f).scaleY(if (has) 1.1f else 1f)
                 .translationZ(if (has) 24f * dp else 0f).setDuration(140).start()
             view.foreground = if (has) GradientDrawable().apply {
@@ -248,12 +286,16 @@ class MainActivity : Activity() {
         if (signature == lastAppsSignature && appRow.childCount > 0) return
         lastAppsSignature = signature
         // Keep your place: rebuilding (moon tile at 10pm / 5am) shouldn't drop focus.
-        val focusedIdx = (0 until appRow.childCount).firstOrNull { appRow.getChildAt(it).hasFocus() }
-        focusedIdx?.let { idx -> main.post { appRow.getChildAt(idx.coerceAtMost(appRow.childCount - 1))?.requestFocus() } }
-        appRow.removeAllViews()
+        val focusedIdx = gridTiles.indexOfFirst { it.hasFocus() }.takeIf { it >= 0 }
+        appRow.removeAllViews(); moreApps.removeAllViews(); gridTiles.clear()
         moonTile = null
 
-        val w = px(208); val h = px(117); val r = 14f * dp
+        // Tile size from the screen width, so exactly APPS_PER_ROW fit across.
+        val cols = Config.APPS_PER_ROW
+        val gap = px(26)
+        val usable = resources.displayMetrics.widthPixels - px(64) * 2 - px(8) * 2
+        val w = (usable - gap * (cols - 1)) / cols; val h = w * 9 / 16; val r = 12f * dp
+        val tiles = mutableListOf<View>()
         for ((app, pkg) in installed) {
             val tile = FrameLayout(this).apply {
                 clipToOutline = true
@@ -274,7 +316,7 @@ class MainActivity : Activity() {
                 }, FrameLayout.LayoutParams(-1, -1))
             }
             focusable(tile, r) { Router.openApp(this, app.key) }
-            appRow.addView(tile, LinearLayout.LayoutParams(w, h).apply { marginEnd = px(22) })
+            tiles.add(tile)
         }
 
         // Settings tile, since the stock Google TV home screen is switched off.
@@ -283,7 +325,7 @@ class MainActivity : Activity() {
             background = GradientDrawable().apply { cornerRadius = r; setColor(0x55FFFFFF) }
         }
         focusable(settings, r) { try { startActivity(Intent(Settings.ACTION_SETTINGS)) } catch (e: Exception) { } }
-        appRow.addView(settings, LinearLayout.LayoutParams(h, h).apply { marginEnd = px(22) })
+        tiles.add(settings)
 
         // Bedroom mode: sleep timer tile after 10pm.
         if (lastBedroom) {
@@ -295,8 +337,20 @@ class MainActivity : Activity() {
             fun label() = refreshMoon()
             label()
             focusable(moon, r) { Sleep.cycle(this); label(); updateClock() }
-            appRow.addView(moon, LinearLayout.LayoutParams(h, h))
+            tiles.add(moon)
         }
+
+        // Lay out: first row on the main screen, the rest in rows below (Apple TV style).
+        tiles.chunked(cols).forEachIndexed { i, chunk ->
+            val rowView = if (i == 0) appRow else row().also {
+                moreApps.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(10) })
+            }
+            chunk.forEachIndexed { j, t ->
+                rowView.addView(t, LinearLayout.LayoutParams(w, h).apply { if (j < cols - 1) marginEnd = gap })
+            }
+        }
+        gridTiles.addAll(tiles)
+        focusedIdx?.let { idx -> main.post { gridTiles.getOrNull(idx.coerceAtMost(gridTiles.size - 1))?.requestFocus() } }
     }
 
     // ------------------------------------------------------------------ sports

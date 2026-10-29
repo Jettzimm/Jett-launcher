@@ -16,6 +16,9 @@ object Config {
     // New York City — used to work out sunrise/sunset for the background.
     const val LAT = 40.7128
     const val LON = -74.0060
+    // Weather: Murray Hill, Manhattan.
+    const val WEATHER_LAT = 40.7479
+    const val WEATHER_LON = -73.9757
 
     // ---------------------------------------------------------------- APP ROW
     // Shown left to right in this order. Each app lists the package names it can

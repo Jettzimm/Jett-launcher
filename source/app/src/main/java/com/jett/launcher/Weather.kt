@@ -20,9 +20,10 @@ object Weather {
         if (System.currentTimeMillis() - fetchedAt < 20 * 60_000L) return cached
         return try {
             val prefs = ctx.getSharedPreferences("weather", Context.MODE_PRIVATE)
-            val hourlyUrl = prefs.getString("url", null) ?: run {
-                val p = JSONObject(get("https://api.weather.gov/points/${Config.LAT},${Config.LON}"))
-                p.getJSONObject("properties").getString("forecastHourly").also { prefs.edit().putString("url", it).apply() }
+            val key = "url_${Config.WEATHER_LAT},${Config.WEATHER_LON}"
+            val hourlyUrl = prefs.getString(key, null) ?: run {
+                val p = JSONObject(get("https://api.weather.gov/points/${Config.WEATHER_LAT},${Config.WEATHER_LON}"))
+                p.getJSONObject("properties").getString("forecastHourly").also { prefs.edit().putString(key, it).apply() }
             }
             val periods = JSONObject(get(hourlyUrl)).getJSONObject("properties").getJSONArray("periods")
             val first = periods.getJSONObject(0)
@@ -38,7 +39,7 @@ object Weather {
                 .also { cached = it; fetchedAt = System.currentTimeMillis() }
         } catch (e: Exception) {
             // Gridpoint URLs occasionally change: re-resolve next time.
-            ctx.getSharedPreferences("weather", Context.MODE_PRIVATE).edit().remove("url").apply()
+            ctx.getSharedPreferences("weather", Context.MODE_PRIVATE).edit().clear().apply()
             cached
         }
     }

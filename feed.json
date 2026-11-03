@@ -1,7 +1,7 @@
 {
-  "versionCode": 43,
-  "versionName": "4.12",
-  "apk": "https://raw.githubusercontent.com/Jettzimm/jett-launcher/main/apk/JettLauncher-43.apk",
+  "versionCode": 44,
+  "versionName": "4.13",
+  "apk": "https://raw.githubusercontent.com/Jettzimm/jett-launcher/main/apk/JettLauncher-44.apk",
   "photos": "https://raw.githubusercontent.com/Jettzimm/jett-launcher/main/photos.json",
   "photosVersion": 5,
   "linkStyle": "web",
@@ -52,5 +52,13 @@
     "RedZone": "JCZl8GHvkko"
   },
   "gameLinks": {},
-  "wakeUps": []
+  "wakeUps": [
+    {
+      "days": "1-5",
+      "time": "08:00",
+      "off": "11:00",
+      "channel": "CNBC",
+      "volume": 10
+    }
+  ]
 }

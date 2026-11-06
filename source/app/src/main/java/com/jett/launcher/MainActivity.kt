@@ -39,6 +39,7 @@ class MainActivity : Activity() {
     private lateinit var caption: TextView
     private lateinit var content: View
     private lateinit var weatherText: TextView
+    private var weatherIconKey: String? = null
     @Volatile private var weather: Weather.Now? = null
     private var weatherAsked = 0L
     private lateinit var page: ScrollView
@@ -63,7 +64,23 @@ class MainActivity : Activity() {
         @Volatile var homeOnTop = false
         /** A home screen exists in this process (created and not destroyed). */
         @Volatile var alive = false
+        /** The bar as last shown (phone app), and its games / fight so the phone can open one. */
+        @Volatile var barJson: org.json.JSONObject? = null
+        @Volatile var barGames: Map<String, Game> = emptyMap()
+        @Volatile var barFight: FightCard? = null
+
+        /** Same as pressing the UFC card. */
+        fun openFight(ctx: android.content.Context, f: FightCard) {
+            when (val app = Router.appForNetwork(f.network, null)) {
+                "yttv" -> Router.openChannel(ctx, f.network)
+                null -> Router.openApp(ctx, "paramount")
+                else -> Router.openApp(ctx, app)
+            }
+        }
+        /** The live home screen, for the phone app's "now" buttons. */
+        @Volatile var current: MainActivity? = null
     }
+    private var seenSettings = -1
     private var resumed = false
     private var lastAppsSignature = ""
 
@@ -85,7 +102,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        alive = true
+        alive = true; current = this
         dp = resources.displayMetrics.density
         setContentView(buildUi())
         registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_ON))
@@ -93,6 +110,7 @@ class MainActivity : Activity() {
         Alerts.schedule(this, 1)
         WindowAlarm.scheduleNext(this)
         Updater.scheduleDaily(this)
+        try { WakeUp.schedule(this) } catch (e: Exception) { }
         // A real boot counts as a power-on. So does the TV waking into a freshly restarted app
         // (Android had closed it during standby), since that TV-on signal went out before we existed.
         val freshProcess = android.os.SystemClock.elapsedRealtime() - android.os.Process.getStartElapsedRealtime() < 30_000L
@@ -103,6 +121,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         resumed = true; onHome = true; homeOnTop = true
+        getSharedPreferences("updater", MODE_PRIVATE).edit().putBoolean("homeWasOnTop", true).apply()
         // Resumed by a background restore while the TV is off? Not you using the home screen.
         val screenOn = getSystemService(android.os.PowerManager::class.java).isInteractive
         if (screenOn) lastKeyAt = System.currentTimeMillis()
@@ -121,12 +140,15 @@ class MainActivity : Activity() {
         super.onPause()
         resumed = false; onHome = false
         // Paused because another app opened (not just because the TV went off)?
-        if (getSystemService(android.os.PowerManager::class.java).isInteractive) homeOnTop = false
+        if (getSystemService(android.os.PowerManager::class.java).isInteractive) {
+            homeOnTop = false
+            getSharedPreferences("updater", MODE_PRIVATE).edit().putBoolean("homeWasOnTop", false).apply()
+        }
         main.removeCallbacks(clockTick); main.removeCallbacks(sportsTick); main.removeCallbacks(idleTimeout)
     }
 
     override fun onDestroy() {
-        alive = false
+        alive = false; if (current === this) current = null
         unregisterReceiver(screenReceiver); io.shutdownNow(); super.onDestroy()
     }
 
@@ -138,7 +160,10 @@ class MainActivity : Activity() {
     }
 
     private val clockTick = object : Runnable {
-        override fun run() { updateClock(); backdrop.tick(); main.postDelayed(this, 20_000) }
+        override fun run() {
+            if (seenSettings != AppSettings.version) settingsChanged()
+            updateClock(); backdrop.tick(); main.postDelayed(this, 20_000)
+        }
     }
     private val sportsTick = object : Runnable {
         // Skipped in full-screen photo mode (bar isn't visible); refreshed on the way back.
@@ -189,27 +214,30 @@ class MainActivity : Activity() {
         }
         caption.textSize = 22f
         root.addView(caption, captionParams(ambientMode = false))
-        backdrop.onCaption = { text -> caption.text = text }
+        backdrop.onCaption = { text -> caption.text = text; nowCaption = text.toString() }
+        caption.visibility = if (AppSettings.backdrop().optBoolean("captions", true)) View.VISIBLE else View.INVISIBLE
 
         clock = TextView(this).apply {
-            setTextColor(Color.WHITE); textSize = 64f
-            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            setTextColor(Color.WHITE); textSize = 76f
+            typeface = clockFont(350); fontFeatureSettings = "'lnum','pnum'"
             setShadowLayer(12f, 0f, 2f, 0x66000000)
         }
         greeting = TextView(this).apply {
-            setTextColor(Color.WHITE); textSize = 30f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(Color.WHITE); textSize = 34f
+            typeface = clockFont(500)
             setShadowLayer(12f, 0f, 2f, 0x66000000)
         }
         dateLine = TextView(this).apply {
-            setTextColor(0xD9FFFFFF.toInt()); textSize = 17f
+            setTextColor(0xE0FFFFFF.toInt()); textSize = 19f
+            typeface = clockFont(500); fontFeatureSettings = "'lnum','pnum'"
             setPadding(0, px(4), 0, 0); setShadowLayer(10f, 0f, 2f, 0x66000000)
         }
         // Weather beside the clock ("68° ☀"), in the same light style but smaller.
         weatherText = TextView(this).apply {
-            setTextColor(0xE6FFFFFF.toInt()); textSize = 30f
-            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            setTextColor(0xE6FFFFFF.toInt()); textSize = 36f
+            typeface = clockFont(400); fontFeatureSettings = "'lnum','pnum'"
             setShadowLayer(12f, 0f, 2f, 0x66000000); setPadding(px(22), 0, 0, px(10))
+            compoundDrawablePadding = px(14)
         }
         val clockRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM
@@ -233,6 +261,11 @@ class MainActivity : Activity() {
         return root
     }
 
+    /** Cormorant Garamond (upright) for the clock, greeting and date: matches the photo captions. */
+    private fun clockFont(weight: Int): Typeface = try {
+        Typeface.Builder(assets, "clock.ttf").setFontVariationSettings("'wght' $weight").build()
+    } catch (e: Exception) { Typeface.create("serif", Typeface.NORMAL) }
+
     private fun captionFont(): Typeface = try {
         Typeface.Builder(assets, "caption.ttf").setFontVariationSettings("'wght' 500").build()
     } catch (e: Exception) { Typeface.create("serif", Typeface.ITALIC) }
@@ -247,6 +280,26 @@ class MainActivity : Activity() {
             caption.textSize = if (ambientMode) 24f else 22f
             caption.animate().alpha(1f).setDuration(450).start()
         }.start()
+    }
+
+    /** A tile with a centred outline icon and a small label under it (Settings, Sleep). */
+    private fun iconTile(icon: String, text: String, r: Float): Pair<FrameLayout, TextView> {
+        val label = TextView(this).apply {
+            this.text = text; textSize = 15f; setTextColor(0xF2FFFFFF.toInt()); gravity = Gravity.CENTER
+            typeface = clockFont(500); setPadding(0, px(8), 0, 0)
+        }
+        val stack = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+            addView(ImageView(this@MainActivity).apply { setImageDrawable(LineIcon(icon, stroke = 1.3f)) },
+                LinearLayout.LayoutParams(px(44), px(44)))
+            addView(label, LinearLayout.LayoutParams(-2, -2))
+        }
+        val tile = FrameLayout(this).apply {
+            clipToOutline = true
+            background = GradientDrawable().apply { cornerRadius = r; setColor(0x40FFFFFF) }
+            addView(stack, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        }
+        return tile to label
     }
 
     private fun sectionLabel(t: String) = TextView(this).apply {
@@ -270,9 +323,12 @@ class MainActivity : Activity() {
     private var moonTile: TextView? = null
     private fun refreshMoon() {
         val m = Sleep.minutesLeft(this)
-        moonTile?.text = if (m > 0) "☾\n$m min" else "☾\nSleep"
+        moonTile?.text = if (m > 0) "$m min" else "Sleep"
     }
-    private fun isBedroom(now: ZonedDateTime) = now.hour >= Config.BEDROOM_START_HOUR || now.hour < 5
+    private fun isBedroom(now: ZonedDateTime): Boolean {
+        val sf = AppSettings.home().optInt("sleepFrom", Config.BEDROOM_START_HOUR)
+        return if (sf < 5) now.hour in sf until 5 else now.hour >= sf || now.hour < 5   // e.g. from midnight: 0–5am only
+    }
 
     private fun updateClock() {
         val now = ZonedDateTime.now(zone)
@@ -286,13 +342,21 @@ class MainActivity : Activity() {
         val sleepLeft = Sleep.minutesLeft(this)
         refreshMoon()
         // Weather: refresh in the background (cached 20 min); rain/snow heads-up on the date line.
-        if (System.currentTimeMillis() - weatherAsked > 5 * 60_000L) {
+        val showWeather = AppSettings.home().optBoolean("weather", true)
+        if (showWeather && System.currentTimeMillis() - weatherAsked > 5 * 60_000L) {
             weatherAsked = System.currentTimeMillis()
             io.execute { val w = Weather.get(this); main.post { weather = w; updateClock() } }
         }
-        weatherText.text = weather?.let { "${it.tempF}°  ${it.icon}" } ?: ""
+        val w = weather?.takeIf { showWeather }
+        weatherText.text = w?.let { "${it.tempF}°" } ?: ""
+        val iconKey = w?.icon
+        if (iconKey != weatherIconKey) {
+            weatherIconKey = iconKey
+            val sz = (weatherText.textSize * 0.95f).toInt()
+            weatherText.setCompoundDrawables(null, null, iconKey?.let { LineIcon(it, stroke = 1.4f).apply { setBounds(0, 0, sz, sz) } }, null)
+        }
         dateLine.text = DateTimeFormatter.ofPattern("EEEE, MMMM d", Locale.US).format(now) +
-            (weather?.heads?.let { "   ·   $it" } ?: "") +
+            (w?.heads?.let { "   ·   $it" } ?: "") +
             (if (sleepLeft > 0) "   ·   ☾ Sleep in $sleepLeft min" else "")
         if (isBedroom(now) != lastBedroom) { lastBedroom = isBedroom(now); lastAppsSignature = ""; buildAppRow() }
     }
@@ -320,7 +384,13 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ apps
 
     private fun buildAppRow() {
-        val installed = Config.APPS.mapNotNull { app -> Router.installedPackage(this, app)?.let { app to it } }
+        // Order and hidden apps come from the phone app; new apps go at the end.
+        val hs = AppSettings.home()
+        val order = ControlCore.strings(hs.optJSONArray("appOrder"))
+        val hidden = ControlCore.strings(hs.optJSONArray("hiddenApps")).toSet()
+        val installed = Config.APPS.sortedBy { a -> order.indexOf(a.key).let { if (it < 0) 1000 + Config.APPS.indexOf(a) else it } }
+            .filter { it.key !in hidden }
+            .mapNotNull { app -> Router.installedPackage(this, app)?.let { app to it } }
         val signature = installed.joinToString { it.second } + lastBedroom
         if (signature == lastAppsSignature && appRow.childCount > 0) return
         lastAppsSignature = signature
@@ -359,30 +429,25 @@ class MainActivity : Activity() {
         }
 
         // Settings tile, since the stock Google TV home screen is switched off.
-        val settings = TextView(this).apply {
-            text = "⚙"; textSize = 34f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            background = GradientDrawable().apply { cornerRadius = r; setColor(0x55FFFFFF) }
-        }
+        val settings = iconTile("gear", "Settings", r).first
         focusable(settings, r) { try { startActivity(Intent(Settings.ACTION_SETTINGS)) } catch (e: Exception) { } }
         tiles.add(settings)
 
         // Bedroom mode: sleep timer tile after 10pm.
         if (lastBedroom) {
-            val moon = TextView(this).apply {
-                textSize = 20f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-                background = GradientDrawable().apply { cornerRadius = r; setColor(0x55FFFFFF) }
-            }
-            moonTile = moon
-            fun label() = refreshMoon()
-            label()
-            focusable(moon, r) { Sleep.cycle(this); label(); updateClock() }
+            val (moon, label) = iconTile("moon", "Sleep", r)
+            moonTile = label
+            refreshMoon()
+            focusable(moon, r) { Sleep.cycle(this); refreshMoon(); updateClock() }
             tiles.add(moon)
         }
 
         // Lay out: first row on the main screen, the rest in rows below (Apple TV style).
         tiles.chunked(cols).forEachIndexed { i, chunk ->
             val rowView = if (i == 0) appRow else row().also {
-                moreApps.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(10) })
+                // Same gap between every row: the first row also sits under the first screen's
+                // bottom padding (28), so it moves up by that much.
+                moreApps.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = px(10) - if (i == 1) px(28) else 0 })
             }
             chunk.forEachIndexed { j, t ->
                 rowView.addView(t, LinearLayout.LayoutParams(w, h).apply { if (j < cols - 1) marginEnd = gap })
@@ -395,6 +460,7 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ sports
 
     @Volatile private var sportsGen = 0
+    private var barLabel: String? = null
 
     private fun refreshSports() {
         val gen = ++sportsGen
@@ -408,15 +474,64 @@ class MainActivity : Activity() {
                     it.start.atZone(zone).hour < Config.EARLY_NFL_BEFORE_HOUR
             }
             val busy = early.flatMap { it.allNetworks }.map(Router::normalize).toSet()
-            val shows = try { Morning.picks(now, Config.MORNING_CARDS - early.size, busy) } catch (e: Exception) { emptyList() }
-            val ordered = early + games.filterNot { it in early }
-            val ufc = try { Ufc.current() } catch (e: Exception) { null }
+            // A custom bar for this time of day (set in the phone app) replaces the morning shows.
+            val bar = AppSettings.bar()
+            val window = ControlCore.barWindow(bar, now)
+            val shows = when {
+                window != null -> ControlCore.strings(window.optJSONArray("channels"))
+                    .filterNot { ch -> busy.any { it.equals(ch, true) } }
+                    .map { Config.Show("Live now", it, "00:00", "23:59") }
+                !bar.optBoolean("morningShows", true) -> emptyList()
+                else -> try { Morning.picks(now, Config.MORNING_CARDS - early.size, busy) } catch (e: Exception) { emptyList() }
+            }
+            val idle = ControlCore.strings(bar.optJSONArray("idleChannels")).map { Config.Show("Live now", it, "00:00", "23:59") }
+            // A time slot with "Live games too" off shows only its channels.
+            val gamesOn = window?.optBoolean("games", true) ?: true
+            val ordered = if (gamesOn) early + games.filterNot { it in early } else emptyList()
+            val ufc = if (gamesOn) try { Ufc.current() } catch (e: Exception) { null } else null
             // Nothing live and no morning shows: CNBC, ESPN, CNN.
             // No live game and no morning shows: lead with live channels (CNBC, ESPN, CNN) so
             // there's always something on to click.
-            val cards = if (shows.isEmpty() && ordered.none { it.isLive }) Config.ALWAYS_ON else shows
-            main.post { if (!isDestroyed && gen == sportsGen) showGames(ordered, cards, early.size, ufc) }   // newest only
+            val isIdle = shows.isEmpty() && ordered.none { it.isLive }
+            val cards = if (isIdle) idle else shows
+            val label = when {
+                isIdle -> "On now"
+                window != null -> window.optString("name").ifBlank { "On now" }
+                else -> null
+            }
+            val lead = if (gamesOn) early.size else 0
+            main.post { if (!isDestroyed && gen == sportsGen) { barLabel = label; showGames(ordered, cards, lead, ufc) } }   // newest only
+            snapshot(ordered, cards, lead, ufc, label)
         }
+    }
+
+    /** What the bar shows, in the same order, for the phone app's "On the bar" strip. */
+    private fun snapshot(games: List<Game>, shows: List<Config.Show>, leadGames: Int, ufc: FightCard?, label: String?) {
+        fun side(abbr: String, logo: String?, score: String, rank: Int?) = org.json.JSONObject()
+            .put("abbr", abbr).put("logo", logo ?: "").put("score", score).put("rank", rank ?: org.json.JSONObject.NULL)
+        fun game(g: Game) = org.json.JSONObject().put("type", "game").put("id", g.id).put("league", g.league.label)
+            .put("away", side(g.awayAbbr, g.awayLogo, g.awayScore, g.awayRank))
+            .put("home", side(g.homeAbbr, g.homeLogo, g.homeScore, g.homeRank))
+            .put("state", g.state).put("detail", if (g.state == "pre") "" else g.detail)
+            .put("when", g.statusText(zone).substringAfter(' ')).put("network", try { Router.cardLabel(this, g) } catch (e: Exception) { g.networkLabel })
+            .put("pinned", g.pinned)
+        fun show(s: Config.Show) = org.json.JSONObject().put("type", "show").put("channel", s.channel).put("title", s.title)
+            .put("upcoming", s.upcoming).put("start", s.start).put("end", s.end)
+        val items = org.json.JSONArray()
+        games.take(leadGames).forEach { items.put(game(it)) }
+        shows.forEach { items.put(show(it)) }
+        val rest = games.drop(leadGames)
+        rest.filter { it.pinned }.forEach { items.put(game(it)) }
+        ufc?.let { items.put(org.json.JSONObject().put("type", "fight").put("title", it.title).put("headline", it.headline)
+            .put("network", it.network).put("upcoming", !it.isLive).put("start", it.start.atZone(zone).toLocalTime().toString().take(5))) }
+        rest.filterNot { it.pinned }.forEach { items.put(game(it)) }
+        val shownLabel = when {
+            label != null && games.isEmpty() && ufc == null -> label
+            shows.isNotEmpty() && games.isEmpty() && ufc == null -> "On this morning"
+            else -> "Live & upcoming"
+        }
+        barGames = games.associateBy { it.id }; barFight = ufc
+        barJson = org.json.JSONObject().put("label", shownLabel).put("items", items)
     }
 
     private fun showGames(games: List<Game>, shows: List<Config.Show> = emptyList(), leadGames: Int = 0, ufc: FightCard? = null) {
@@ -424,7 +539,7 @@ class MainActivity : Activity() {
         sportsRow.removeAllViews()
         sportsSection.visibility = if (games.isEmpty() && shows.isEmpty() && ufc == null) View.GONE else View.VISIBLE
         sportsLabel.text = (when {
-            shows === Config.ALWAYS_ON -> "On now"
+            barLabel != null && games.isEmpty() && ufc == null -> barLabel!!
             shows.isNotEmpty() && games.isEmpty() && ufc == null -> "On this morning"
             else -> "Live & upcoming"
         }).uppercase(Locale.US)
@@ -466,7 +581,7 @@ class MainActivity : Activity() {
             // Header: league · network          LIVE / time
             val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
             header.addView(TextView(this).apply {
-                text = listOf(g.league.label, g.networkLabel).filter { it.isNotEmpty() }.joinToString(" · ")
+                text = listOf(g.league.label, Router.cardLabel(this@MainActivity, g)).filter { it.isNotEmpty() }.joinToString(" · ")
                 textSize = 12f; setTextColor(0xB3FFFFFF.toInt()); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             }, LinearLayout.LayoutParams(0, -2, 1f))
             header.addView(TextView(this).apply {
@@ -515,13 +630,7 @@ class MainActivity : Activity() {
                 maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             })
         }
-        focusable(card, r) {
-            when (val app = Router.appForNetwork(f.network, null)) {
-                "yttv" -> Router.openChannel(this, f.network)
-                null -> Router.openApp(this, "paramount")
-                else -> Router.openApp(this, app)
-            }
-        }
+        focusable(card, r) { openFight(this, f) }
         sportsRow.addView(card, LinearLayout.LayoutParams(px(250), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = px(18) })
     }
 
@@ -603,7 +712,7 @@ class MainActivity : Activity() {
     /** Restart the 2-minute countdown to full-screen photos. */
     private fun resetIdle() {
         main.removeCallbacks(idleTimeout)
-        main.postDelayed(idleTimeout, Config.IDLE_TO_PHOTOS_SECONDS * 1000)
+        main.postDelayed(idleTimeout, AppSettings.backdrop().optInt("idleSec", Config.IDLE_TO_PHOTOS_SECONDS.toInt()).coerceAtLeast(15) * 1000L)
     }
 
     // Photo mode keeps the screen on (so Google TV's own screensaver doesn't cover the photos),
@@ -622,6 +731,30 @@ class MainActivity : Activity() {
         placeCaption(on)
         if (!on) refreshSports()
     }
+
+    // ------------------------------------------------------------------ phone app
+
+    /** Something changed in the phone app: rebuild what depends on settings. */
+    fun settingsChanged() {
+        seenSettings = AppSettings.version
+        lastAppsSignature = ""; buildAppRow()
+        caption.visibility = if (AppSettings.backdrop().optBoolean("captions", true)) View.VISIBLE else View.INVISIBLE
+        backdrop.applySettings()
+        weatherAsked = 0L; updateClock()
+        if (!ambient) refreshSports()
+        resetIdle()
+    }
+
+    /** "Photos now" / "Home screen" from the phone. */
+    fun remoteAmbient(on: Boolean) { if (on != ambient) setAmbient(on); if (!on) resetIdle() }
+
+    /** "Show this photo now" from the phone. */
+    fun remoteShowPhoto(id: String) = backdrop.showNow(id)
+
+    /** What's on screen now (for the phone app's header). */
+    @Volatile private var nowCaption = ""
+    fun nowShowing(): Pair<String, String>? = backdrop.currentId?.let { it to nowCaption }   // safe off the main thread
+    fun isAmbient() = ambient
 
     private fun topRow(): LinearLayout =
         if (sportsSection.visibility == View.VISIBLE && sportsRow.childCount > 0) sportsRow else appRow

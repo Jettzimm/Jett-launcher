@@ -148,14 +148,12 @@ class SkyView(context: Context) : View(context) {
 
 /** Darkens the bottom and top-left so text stays readable over any photo. */
 class Scrim(context: Context) : View(context) {
-    private val paint = Paint()
-    override fun onDraw(canvas: Canvas) {
-        val w = width.toFloat(); val h = height.toFloat()
-        paint.shader = LinearGradient(0f, h * 0.35f, 0f, h, 0x00000000, 0xD9000000.toInt(), Shader.TileMode.CLAMP)
-        canvas.drawRect(0f, 0f, w, h, paint)
-        paint.shader = LinearGradient(0f, 0f, w * 0.6f, 0f, 0x99000000.toInt(), 0x00000000, Shader.TileMode.CLAMP)
-        canvas.drawRect(0f, 0f, w, h * 0.5f, paint)
-    }
+    // One even shade over the whole photo on the home screen, so the clock and tiles read on
+    // any photo. Photo mode fades this out completely (Backdrop.setAmbient).
+    /** 0–100 (%), set in the phone app. */
+    var shade = 40
+        set(v) { field = v.coerceIn(0, 90); invalidate() }
+    override fun onDraw(canvas: Canvas) { canvas.drawColor(Color.argb(shade * 255 / 100, 0, 0, 0)) }
 }
 
 /**
@@ -186,19 +184,41 @@ class Backdrop(context: Context) : android.widget.FrameLayout(context) {
     init {
         for (v in listOf(sky, a, b, scrim)) addView(v, LayoutParams(-1, -1))
         for (iv in listOf(a, b)) { iv.scaleType = android.widget.ImageView.ScaleType.CENTER_CROP; iv.alpha = 0f }
+        scrim.shade = AppSettings.backdrop().optInt("shade", 40)
     }
 
-    /** Built-in photos ("asset:" paths) plus downloaded ones (file paths), one entry per photo. */
+    /**
+     * The photos to rotate through now, after the phone app's choices: hidden ones out; only
+     * favourites or chosen places if set; every time of day if "match the time" is off.
+     * If the choices leave nothing for this time of day, falls back to everything.
+     */
     private fun photos(p: Phase): List<String> {
-        val builtIn = try {
-            context.assets.list("bg/${p.folder}").orEmpty()
-                .filter { it.matches(Regex(".*\\.(jpe?g|png|webp)", RegexOption.IGNORE_CASE)) }
-                .map { "asset:bg/${p.folder}/$it" }
-        } catch (e: Exception) { emptyList() }
-        // The downloaded (full-quality) copy wins over the built-in starter copy of the same photo.
-        val downloaded = PhotoLibrary.files(context, p.folder).map { it.path }
-        val have = downloaded.map { idOf(it) }.toSet()
-        return downloaded + builtIn.filter { idOf(it) !in have }
+        val b = AppSettings.backdrop()
+        val pool = if (b.optBoolean("matchTime", true)) PhotoIndex.phase(context, p.folder) else PhotoIndex.all(context)
+        val hidden = AppSettings.hiddenPhotos()
+        val favs = AppSettings.favoritePhotos()
+        val places = ControlCore.strings(b.optJSONArray("places")).toSet()
+        val chosen = pool.filter { it.id !in hidden }
+            .filter { !b.optBoolean("favoritesOnly", false) || favs.isEmpty() || it.id in favs }
+            .filter { PhotoIndex.inPlaces(it, places) }
+        return (chosen.ifEmpty { pool.filter { it.id !in hidden }.ifEmpty { pool } }).map { it.path }
+    }
+
+    /** The photo on screen now. */
+    @Volatile var currentId: String? = null; private set
+
+    /** Re-reads the phone app's backdrop settings (new shade now, new photo set from the next photo). */
+    fun applySettings() {
+        scrim.shade = AppSettings.backdrop().optInt("shade", 40)
+        queue.clear()
+        if (currentId in AppSettings.hiddenPhotos()) next(fast = false)
+    }
+
+    /** Shows one photo right away (from the phone app). */
+    fun showNow(id: String) {
+        val p = PhotoIndex.find(context, id) ?: return
+        queue.addFirst(p.path)
+        next(fast = false)
     }
 
     private fun idOf(path: String) = path.substringAfterLast('/').substringBeforeLast('.')
@@ -206,7 +226,7 @@ class Backdrop(context: Context) : android.widget.FrameLayout(context) {
     fun tick(now: ZonedDateTime = ZonedDateTime.now(Config.ZONE)) {
         sky.refresh(now)
         val p = SunClock.phase(now)
-        val due = System.currentTimeMillis() - lastSwap >= Config.PHOTO_ROTATE_MINUTES * 60_000
+        val due = System.currentTimeMillis() - lastSwap >= rotateMs()
         if (p != phase) { phase = p; queue.clear(); next(fast = lastSwap == 0L) }
         else if (due) next(fast = false)
     }
@@ -239,7 +259,10 @@ class Backdrop(context: Context) : android.widget.FrameLayout(context) {
         }
     }
 
+    private fun rotateMs() = AppSettings.backdrop().optInt("rotateMin", Config.PHOTO_ROTATE_MINUTES.toInt()).coerceIn(1, 120) * 60_000L
+
     private fun show(path: String, bmp: Bitmap, fast: Boolean) {
+        currentId = idOf(path)
         onCaption?.invoke(captions[idOf(path)].orEmpty())
         val incoming = if (front === a) b else a
         val outgoing = front
@@ -256,7 +279,7 @@ class Backdrop(context: Context) : android.widget.FrameLayout(context) {
         }.start()
         // Slow drift, like Apple TV's aerials. Hardware-accelerated, so cheap on the box.
         incoming.animate().scaleX(1.08f).scaleY(1.08f)
-            .setDuration(Config.PHOTO_ROTATE_MINUTES * 60_000 + fade)
+            .setDuration(rotateMs() + fade)
             .setInterpolator(android.view.animation.LinearInterpolator()).start()
         front = incoming
     }

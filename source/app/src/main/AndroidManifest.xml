@@ -75,6 +75,13 @@
             android:launchMode="singleInstance"
             android:theme="@style/CountdownTheme" />
 
+        <!-- Scheduled wake-up: turns the box (and TV) on, then tunes a channel. -->
+        <activity
+            android:name=".WakeUpActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@style/WakeTheme" />
+
         <receiver android:name=".RuleReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
@@ -94,6 +101,11 @@
         <receiver android:name=".AlertReceiver" android:exported="false" />
         <receiver android:name=".InstallResultReceiver" android:exported="false" />
         <receiver android:name=".WindowAlarmReceiver" android:exported="false" />
+        <receiver android:name=".WakeUpReceiver" android:exported="false" />
+        <receiver android:name=".RelayReceiver" android:exported="false" />
+        <!-- adb-only test of the wake-up (DUMP is held by the adb shell, not by apps). -->
+        <receiver android:name=".WakeTestReceiver" android:exported="true" android:permission="android.permission.DUMP" />
+        <receiver android:name=".VolumeTestReceiver" android:exported="true" android:permission="android.permission.DUMP" />
 
         <service
             android:name=".UpdateDownloadJob"

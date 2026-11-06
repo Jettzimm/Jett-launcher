@@ -150,7 +150,7 @@ class PhotoSyncJob : JobService() {
         val stopped = java.util.concurrent.atomic.AtomicBoolean(false)
         current = stopped
         Thread {
-            val ok = try { PhotoLibrary.sync(this, stopped) } catch (e: Exception) { false }
+            val ok = try { PhotoLibrary.sync(this, stopped) } catch (e: Exception) { false } finally { PhotoIndex.invalidate() }
             if (!stopped.get()) jobFinished(params, !ok)
         }.start()
         return true

@@ -43,6 +43,20 @@ object Router {
     }
 
     /** Opens a live channel: deep link into YouTube TV if we have one, else just the app. */
+    /** A channel name ("CNBC") or a YouTube video ("youtube:<id>"). */
+    fun openTarget(ctx: Context, target: String): Boolean {
+        if (target.isBlank() || target == "home") {
+            ctx.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).setPackage(ctx.packageName)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            return true
+        }
+        if (target.startsWith("youtube:")) {
+            val id = target.removePrefix("youtube:")
+            return tryDeepLink(ctx, "youtube", "https://www.youtube.com/watch?v=$id") || openApp(ctx, "youtube")
+        }
+        return openChannel(ctx, target)
+    }
+
     fun openChannel(ctx: Context, rawChannel: String): Boolean {
         val channel = normalize(rawChannel)
         val app = appForNetwork(channel, null) ?: "yttv"
@@ -73,6 +87,8 @@ object Router {
     }
 
     fun openGame(ctx: Context, game: Game) {
+        // 0) A link for this exact game from the update feed (Netflix, Peacock, Apple TV …).
+        Updater.gameLink(ctx, game.id)?.let { link -> if (openLink(ctx, link)) return }
         // Prime-only game (Thursday night etc.): straight to the game's page in Prime.
         if (Prime.isPrime(game) && game.nationalNetworks.none { appForNetwork(it, null) == "yttv" }) {
             val app = ctx.applicationContext
@@ -84,14 +100,82 @@ object Router {
             }.start()
             return
         }
-        // 1) A national network YouTube TV carries → YouTube TV on that channel.
-        // 2) A streaming-only national broadcast (Prime, Peacock, ESPN+) → that app.
-        // 3) Local/regional networks the same way. 4) League fallback (NHL → ESPN+).
+        // 1) A channel YouTube TV carries (national first, then local) → YouTube TV on it.
         for (list in listOf(game.nationalNetworks, game.localNetworks)) {
             list.firstOrNull { appForNetwork(it, null) == "yttv" }?.let { return void(openChannel(ctx, normalize(it))) }
-            list.firstNotNullOfOrNull { appForNetwork(it, null) }?.let { return void(openApp(ctx, it)) }
         }
-        openApp(ctx, Config.FALLBACK_APP[game.league.key] ?: Config.FALLBACK_APP.getValue("default"))
+        // 2) Streaming: only apps actually on the box, in the order ESPN lists them.
+        val wanted = game.allNetworks.mapNotNull { appForNetwork(it, null) }.distinct()
+        val espnFamily = wanted.filter { it in ESPN_FAMILY }
+        if (espnFamily.isNotEmpty()) return openEspnGame(ctx, game, espnFamily)
+        wanted.firstOrNull { isInstalled(ctx, it) }?.let { return void(openApp(ctx, it)) }
+        // 3) League fallback (out-of-market NHL → ESPN), if that app is here.
+        val fb = Config.FALLBACK_APP[game.league.key] ?: Config.FALLBACK_APP.getValue("default")
+        if (fb in ESPN_FAMILY) return openEspnGame(ctx, game, listOf(fb))
+        if (isInstalled(ctx, fb)) return void(openApp(ctx, fb))
+        toast(ctx, "This game is on ${game.allNetworks.joinToString(", ")}, and none of those apps is on this TV")
+    }
+
+    /**
+     * The network name to show on a game card: where pressing it actually takes you, using the
+     * same order as [openGame] (so a card never says Disney+ and then opens ESPN).
+     */
+    fun cardLabel(ctx: Context, game: Game): String {
+        if (Prime.isPrime(game) && game.nationalNetworks.none { appForNetwork(it, null) == "yttv" })
+            return game.nationalNetworks.first { it.contains("Prime Video", true) }.replace(" (Local)", "")
+        for (list in listOf(game.nationalNetworks, game.localNetworks))
+            list.firstOrNull { appForNetwork(it, null) == "yttv" }?.let { return normalize(it) }
+        val nets = game.allNetworks
+        val wanted = nets.mapNotNull { appForNetwork(it, null) }.distinct()
+        val fb = Config.FALLBACK_APP[game.league.key] ?: Config.FALLBACK_APP.getValue("default")
+        if (wanted.any { it in ESPN_FAMILY } || (wanted.none { isInstalled(ctx, it) } && fb in ESPN_FAMILY)) {
+            val family = wanted.filter { it in ESPN_FAMILY }
+            // Same order as openEspnGame: the ESPN app first, then the listed apps, then the rest.
+            val app = listOf("espn", "disney", "hulu").sortedBy { if (it == "espn") 0 else if (it in family) 1 else 2 }
+                .firstOrNull { isInstalled(ctx, it) }
+            return when (app) { "espn" -> "ESPN+"; "disney" -> "Disney+"; "hulu" -> "Hulu"; else -> game.networkLabel }
+        }
+        wanted.firstOrNull { isInstalled(ctx, it) }?.let { key -> return nets.first { appForNetwork(it, null) == key } }
+        return game.networkLabel
+    }
+
+    /** Which app a web link belongs to (by its site). */
+    private val LINK_HOSTS = listOf(
+        "netflix.com" to "netflix", "peacocktv.com" to "peacock", "max.com" to "max", "hbomax.com" to "max",
+        "tv.apple.com" to "appletv", "paramountplus.com" to "paramount", "youtube.com" to "youtube",
+        "primevideo.com" to "prime", "espn.com" to "espn", "disneyplus.com" to "disney", "hulu.com" to "hulu",
+    )
+
+    /** Opens a web link in the app it belongs to; false if that app isn't here or won't take it. */
+    fun openLink(ctx: Context, link: String): Boolean {
+        val host = Uri.parse(link).host.orEmpty().lowercase()
+        val key = LINK_HOSTS.firstOrNull { host == it.first || host.endsWith("." + it.first) }?.second ?: return false
+        if (key == "prime") return Prime.open(ctx, link)
+        return tryDeepLink(ctx, key, link)
+    }
+
+    /** ESPN+, Disney+ and Hulu all carry the same ESPN streams. */
+    private val ESPN_FAMILY = setOf("espn", "disney", "hulu")
+
+    fun isInstalled(ctx: Context, key: String) = appByKey(key)?.let { installedPackage(ctx, it) } != null
+
+    /**
+     * ESPN app straight into the game's stream (looked up from ESPN's watch API); if the app
+     * won't take a link, the ESPN app itself; then Disney+, then Hulu (both have the ESPN tab).
+     */
+    private fun openEspnGame(ctx: Context, game: Game, family: List<String>) {
+        val app = ctx.applicationContext
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        Thread {
+            val airing = Espn.airingId(game.id)
+            main.post {
+                val espnPkg = appByKey("espn")?.let { installedPackage(app, it) }
+                if (espnPkg != null && Espn.openFirst(app, espnPkg, Espn.links(game.id, airing))) return@post
+                val order = listOf("espn", "disney", "hulu").sortedBy { if (it == "espn") 0 else if (it in family) 1 else 2 }
+                order.firstOrNull { isInstalled(app, it) }?.let { openApp(app, it); return@post }
+                toast(app, "This game is on ${game.allNetworks.joinToString(", ")}, and none of those apps is on this TV")
+            }
+        }.start()
     }
 
     /** Returns app key for a network name, or [fallback] if unknown. */
@@ -127,5 +211,5 @@ object Router {
 
     private fun void(@Suppress("UNUSED_PARAMETER") b: Boolean) = Unit
 
-    private fun toast(ctx: Context, msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+    fun toast(ctx: Context, msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
 }

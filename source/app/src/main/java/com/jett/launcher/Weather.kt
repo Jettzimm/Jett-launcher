@@ -15,6 +15,9 @@ object Weather {
     @Volatile private var cached: Now? = null
     @Volatile private var fetchedAt = 0L
 
+    /** The last reading, without going online (for the phone app). */
+    fun cachedOrNull(ctx: Context): Now? = cached
+
     /** Network: call off the main thread. Cached for 20 minutes. */
     fun get(ctx: Context): Now? {
         if (System.currentTimeMillis() - fetchedAt < 20 * 60_000L) return cached
@@ -47,13 +50,13 @@ object Weather {
     private fun icon(forecast: String, day: Boolean): String {
         val f = forecast.lowercase(Locale.US)
         return when {
-            "thunder" in f -> "⛈"
-            "snow" in f || "flurr" in f || "sleet" in f -> "❄"
-            "rain" in f || "shower" in f || "drizzle" in f -> "☂"
-            "fog" in f || "haze" in f -> "≋"
-            "partly" in f || "mostly sunny" in f || "mostly clear" in f -> if (day) "⛅" else "☾"
-            "cloud" in f || "overcast" in f -> "☁"
-            else -> if (day) "☀" else "☾"
+            "thunder" in f -> "storm"
+            "snow" in f || "flurr" in f || "sleet" in f -> "snow"
+            "rain" in f || "shower" in f || "drizzle" in f -> "rain"
+            "fog" in f || "haze" in f -> "fog"
+            "partly" in f || "mostly sunny" in f || "mostly clear" in f -> if (day) "partly-day" else "partly-night"
+            "cloud" in f || "overcast" in f -> "cloud"
+            else -> if (day) "sun" else "moon"
         }
     }
 

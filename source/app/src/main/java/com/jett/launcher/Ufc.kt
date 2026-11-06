@@ -20,6 +20,7 @@ object Ufc {
 
     /** Numbered card that's live or starts within the bar window, else null. */
     fun current(now: Instant = Instant.now()): FightCard? {
+        if (!AppSettings.leagueOn("ufc")) return null
         // Yesterday–today (ET) so a card running past midnight still shows, and an old one doesn't.
         val today = now.atZone(Config.ZONE).toLocalDate()
         val f = java.time.format.DateTimeFormatter.BASIC_ISO_DATE
@@ -33,7 +34,7 @@ object Ufc {
 
             val state = ev.optJSONObject("status")?.optJSONObject("type")?.optString("state") ?: "pre"
             val start = Instant.parse(ev.getString("date").let { if (it.length == 17) it.dropLast(1) + ":00Z" else it })
-            val soon = now.plusSeconds(Config.SHOW_BAR_MINUTES_BEFORE * 60L)
+            val soon = now.plusSeconds(AppSettings.bar().optInt("minutesBefore", Config.SHOW_BAR_MINUTES_BEFORE) * 60L)
             if (state == "post" || (state == "pre" && start.isAfter(soon))) continue
 
             val comps = ev.optJSONArray("competitions")

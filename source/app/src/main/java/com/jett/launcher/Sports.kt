@@ -56,7 +56,7 @@ object Sports {
             if (type != 3) return emptyList()   // 3 = postseason on ESPN
         }
 
-        val pinnedSet = Config.PINNED[league.key].orEmpty()
+        val pinnedSet = AppSettings.teams(league.key)   // favourite teams, set in the phone app
         val events = json.optJSONArray("events") ?: return emptyList()
         val out = ArrayList<Game>()
         for (i in 0 until events.length()) try {
@@ -78,10 +78,11 @@ object Sports {
             fun conf(c: JSONObject) = c.getJSONObject("team").optString("conferenceId")
 
             if (league.key == "cfb") {
+                val topN = AppSettings.bar().optInt("cfbTopN", Config.CFB_MAX_RANK)
+                val bigTen = AppSettings.bar().optBoolean("bigTen", true)
                 val keep = abbr(home) in pinnedSet || abbr(away) in pinnedSet ||
-                    (rank(home) ?: 99) <= Config.CFB_MAX_RANK ||
-                    (rank(away) ?: 99) <= Config.CFB_MAX_RANK ||
-                    conf(home) in Config.CFB_CONFERENCES || conf(away) in Config.CFB_CONFERENCES
+                    (rank(home) ?: 99) <= topN || (rank(away) ?: 99) <= topN ||
+                    (bigTen && (conf(home) in Config.CFB_CONFERENCES || conf(away) in Config.CFB_CONFERENCES))
                 if (!keep) continue
             }
 
@@ -122,10 +123,10 @@ object Sports {
 
     /** Games worth showing in the bar right now, best first. Empty = hide the bar. */
     fun barGames(now: Instant = Instant.now()): List<Game> {
-        val all = Config.LEAGUES.flatMap { lg ->
+        val all = Config.LEAGUES.filter { AppSettings.leagueOn(it.key) }.flatMap { lg ->
             try { fetchLeague(lg) } catch (e: Exception) { emptyList() }
         }
-        val soon = now.plusSeconds(Config.SHOW_BAR_MINUTES_BEFORE * 60L)
+        val soon = now.plusSeconds(AppSettings.bar().optInt("minutesBefore", Config.SHOW_BAR_MINUTES_BEFORE) * 60L)
         val relevant = all.filter { it.seasonType != 1 }   // no preseason
             .filter { it.isLive || (it.state == "pre" && it.start.isBefore(soon) && it.start.isAfter(now.minusSeconds(3600))) }
         if (relevant.isEmpty()) return emptyList()

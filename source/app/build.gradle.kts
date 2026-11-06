@@ -13,8 +13,8 @@ android {
         applicationId = "com.jett.launcher"
         minSdk = 28
         targetSdk = 34
-        versionCode = 33
-        versionName = "4.2"
+        versionCode = 53
+        versionName = "5.1"
     }
 
     // Fixed signing key so every version installs over the last one. The key and its password
@@ -39,4 +39,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+}
+
+dependencies {
+    // Unit tests run on the computer (no TV needed): the phone app's settings, schedule and web server core.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

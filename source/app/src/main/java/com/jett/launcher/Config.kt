@@ -94,6 +94,7 @@ object Config {
         "Paramount+" to "paramount",
         "Max" to "max",
         "Disney+" to "disney",
+        "Hulu" to "hulu",
         "SECN+" to "espn",
         "ACCNX" to "espn",
     )
@@ -135,6 +136,12 @@ object Config {
         "NBC News NOW" to "ApPDaqv6EvE", "The Weather Channel" to "AERMXq8CBCQ",
         "NFL RedZone" to "JCZl8GHvkko", "RedZone" to "JCZl8GHvkko",
     )
+
+    // ------------------------------------------------------------ WAKE-UPS
+    // Used until the update feed's "wakeUps" list has been read (see WakeUp.kt for the format).
+    // The Samsung's address on the home network (found Nov 3, 2026); the box re-finds it if it changes.
+    const val TV_IP = "192.168.1.169"
+    const val WAKE_UPS_DEFAULT = """[{"days":"1-5","time":"08:00","channel":"youtube:FxAgAyZYXJ8","volume":15,"switchAt":"09:00","switchTo":"CNBC","switchVolume":10,"off":"11:00"}]"""
 
     // ------------------------------------------------------------- UPDATES
     // The box checks this feed daily at 4am (and on boot) for a new version and fresh

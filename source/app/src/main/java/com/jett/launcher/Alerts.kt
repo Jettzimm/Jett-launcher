@@ -30,16 +30,19 @@ object Alerts {
     private val LEAGUES = listOf("nfl", "cfb", "nhl")
 
     /** Worth watching for: a favourite team, or (college) a top-10 team on either side. */
-    fun candidate(g: Game) = g.pinned || (g.league.key == "cfb" &&
-        ((g.awayRank ?: 99) <= Config.ALERT_TOP_RANK || (g.homeRank ?: 99) <= Config.ALERT_TOP_RANK))
+    fun candidate(g: Game): Boolean {
+        val top = AppSettings.alerts().optInt("topRank", Config.ALERT_TOP_RANK)
+        return g.pinned || (g.league.key == "cfb" && ((g.awayRank ?: 99) <= top || (g.homeRank ?: 99) <= top))
+    }
 
     /** Close and late: football within 8 in the 4th/OT; hockey within 1 in the 3rd/OT. */
     fun isClose(g: Game): Boolean {
         if (!g.isLive) return false
         val diff = abs((g.awayScore.toIntOrNull() ?: return false) - (g.homeScore.toIntOrNull() ?: return false))
+        val a = AppSettings.alerts()
         return when (g.league.key) {
-            "nhl" -> g.period >= 3 && diff <= 1
-            else -> g.period >= 4 && diff <= 8
+            "nhl" -> g.period >= 3 && diff <= a.optInt("hockeyMargin", 1)
+            else -> g.period >= 4 && diff <= a.optInt("footballMargin", 8)
         }
     }
 
@@ -53,6 +56,7 @@ object Alerts {
     /** One check. Network: run off the main thread. Returns minutes until the next check (null = stop). */
     fun check(ctx: Context): Long? {
         if (!ctx.getSystemService(PowerManager::class.java).isInteractive) return null   // TV off: stop until it's on
+        if (!AppSettings.alerts().optBoolean("on", true)) return 30L   // switched off in the phone app
         val games = LEAGUES.flatMap { key ->
             val lg = Config.LEAGUES.firstOrNull { it.key == key } ?: return@flatMap emptyList()
             try { Sports.fetchLeague(lg) } catch (e: Exception) { emptyList() }

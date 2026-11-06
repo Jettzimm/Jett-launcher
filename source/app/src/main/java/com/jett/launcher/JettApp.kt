@@ -16,6 +16,10 @@ class JettApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Rules.appContext = applicationContext
+        AppSettings.app = applicationContext
+        // The phone control app (served by the box on the home Wi-Fi).
+        try { ControlServer.start(applicationContext) } catch (e: Exception) { android.util.Log.w("JettApp", "control server", e) }
+        try { Relay.start(applicationContext) } catch (e: Exception) { android.util.Log.w("JettApp", "relay", e) }
         // Started in the background (alarm, job) with the TV off: bring the home screen back so
         // Android treats the launcher as the active home app (and keeps TV-on signals flowing).
         try { if (!getSystemService(android.os.PowerManager::class.java).isInteractive) HomeRestore.run(this) }
@@ -33,9 +37,15 @@ class JettApp : Application() {
                 when (i.action) {
                     // No goAsync here: TV on/off are foreground broadcasts with a 10 s limit, and the
                     // work runs on its own thread anyway.
-                    Intent.ACTION_SCREEN_ON -> { PowerOn.onWake(c); Alerts.schedule(c, 1) }
+                    Intent.ACTION_SCREEN_ON -> {
+                        try { HomeReturn.onScreenOn(c) } catch (e: Exception) { }
+                        PowerOn.onWake(c); Alerts.schedule(c, 1)
+                    }
                     // TV just went off: a downloaded update installs now, unseen.
                     Intent.ACTION_SCREEN_OFF -> {
+                        // In a few minutes, put whatever app is open behind the home screen.
+                        try { HomeReturn.onScreenOff(c) } catch (e: Exception) { }
+                        try { WakeUp.onScreenOff(c) } catch (e: Exception) { }
                         // Hold a wakelock so the box doesn't suspend mid-install. Never let this
                         // crash the app (it's the TV-on listener too).
                         try {

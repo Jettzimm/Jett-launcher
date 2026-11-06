@@ -35,7 +35,7 @@ object Rules {
         for (r in Config.POWER_ON_RULES) {
             if (now.dayOfWeek == r.day && now.hour >= r.startHour && now.hour < r.endHour) {
                 // GameDay only on college-football Saturdays (not in April).
-                if (r.id == "gameday" && Morning.mode(now) !== Config.COLLEGE_SATURDAY) continue
+                if (r.id == "gameday" && (!AppSettings.autoOn("gameday") || Morning.mode(now) !== Config.COLLEGE_SATURDAY)) continue
                 return AutoTarget(r.id, r.title, r.channel)
             }
         }
@@ -105,6 +105,7 @@ object Rules {
         // Playoff days (no RedZone): follow each game. While one is live it stays the target
         // (never pulled away mid-game); the next game takes over once it's over.
         if (today.any { it.seasonType == 3 }) {
+            if (!AppSettings.autoOn("playoffs")) return null
             val playoff = today.filter { it.seasonType == 3 }
             val g = (playoff.filter { it.state == "in" }.minWithOrNull(LIVE_PICK)
                 ?: playoff.filter { startsWithin(it, Config.PLAYOFF_SWITCH_MINUTES_BEFORE) }.minWithOrNull(PICK))
@@ -118,7 +119,8 @@ object Rules {
             today.any { isSundayAfternoon(it) && it.state != "post" }
         ) {
             if (today.any { it.state == "in" && it.start.atZone(ZONE).hour < 12 }) return null
-            return AutoTarget("redzone", "NFL RedZone", Config.REDZONE_CHANNEL)
+            if (AppSettings.autoOn("redzone")) return AutoTarget("redzone", "NFL RedZone", Config.REDZONE_CHANNEL)
+            return null
         }
 
         // Night game. Sundays switch as soon as RedZone ends (the pregame show); other nights just
@@ -128,6 +130,7 @@ object Rules {
         // A late-afternoon game still going (Saturday 5pm, Thanksgiving/Christmas OT): don't pull
         // you off it before it ends; the night game is offered as soon as it does.
         if (today.any { !isNight(it) && it.state == "in" }) return null
+        if (!AppSettings.autoOn("nightGames")) return null
         val g = (night.filter { it.state == "in" }.minWithOrNull(LIVE_PICK)
             ?: (if (now.dayOfWeek == Config.NFL_SUNDAY && now.hour >= Config.REDZONE_START_HOUR) night
                 else night.filter { startsWithin(it, Config.NIGHT_SWITCH_MINUTES_BEFORE) }).minWithOrNull(PICK))

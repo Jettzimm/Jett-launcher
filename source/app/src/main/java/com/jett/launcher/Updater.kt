@@ -34,6 +34,14 @@ object Updater {
     fun linkStyle(ctx: Context): String =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("linkStyle", null) ?: Config.YTTV_LINK_STYLE
 
+    /** A deep link for this game from the feed, or null. */
+    fun gameLink(ctx: Context, gameId: String): String? =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("gl_$gameId", null)
+
+    /** Channel names the feed has codes for (the phone app's channel list). */
+    fun channelNames(ctx: Context): List<String> =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).all.keys.filter { it.startsWith("ch_") }.map { it.removePrefix("ch_") }
+
     fun channelCode(ctx: Context, channel: String): String {
         val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         prefs.all.entries.firstOrNull { it.key.equals("ch_$channel", true) }?.value?.toString()
@@ -64,6 +72,15 @@ object Updater {
             val feed = JSONObject(Sports.httpGet("$feedUrl?t=${System.currentTimeMillis() / 60_000}"))
             val e = prefs.edit()
             feed.optJSONObject("channels")?.let { ch -> ch.keys().forEach { k -> e.putString("ch_$k", ch.optString(k)) } }
+            // Per-game deep links (ESPN game id → app link), for streaming-only games
+            // (Netflix, Peacock, …). The feed's list replaces the old one.
+            // Scheduled wake-ups ("turn on at 7:00 on CNBC"); an empty list switches them off.
+            feed.optString("tvIp").takeIf { it.matches(Regex("\\d+\\.\\d+\\.\\d+\\.\\d+")) }?.let { e.putString("tvIp", it) }
+            feed.optJSONArray("wakeUps")?.let { w -> try { WakeUp.onFeed(ctx, w.toString()) } catch (ex: Exception) { } }
+            feed.optJSONObject("gameLinks")?.let { gl ->
+                prefs.all.keys.filter { it.startsWith("gl_") }.forEach { e.remove(it) }
+                gl.keys().forEach { k -> gl.optString(k).takeIf { it.startsWith("https://") }?.let { e.putString("gl_$k", it) } }
+            }
             e.putLong("lastFeed", System.currentTimeMillis()).putBoolean("feedFailed", false)
             feed.optString("linkStyle").takeIf { it == "app" || it == "web" }?.let { e.putString("linkStyle", it) }
             val remote = feed.optInt("versionCode", 0)
@@ -253,7 +270,7 @@ class UpdateDownloadJob : android.app.job.JobService() {
 open class UpdateReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         // Exported one: system signals only. Our own alarms go to the private UpdateAlarmReceiver.
-        val mine = intent.action == Updater.ACTION_CHECK || intent.action == HomeRestore.ACTION
+        val mine = intent.action == Updater.ACTION_CHECK || intent.action == HomeRestore.ACTION || intent.action == HomeReturn.ACTION
         if (mine != (this is UpdateAlarmReceiver)) return
         when (intent.action) {
             // Just updated itself: the app was restarted; re-arm everything so the TV-on listener
@@ -263,20 +280,31 @@ open class UpdateReceiver : BroadcastReceiver() {
                 val local = ctx.packageManager.getPackageInfo(ctx.packageName, 0).longVersionCode
                 if (prefs.getInt("readyVersion", 0) <= local) { Updater.readyFile(ctx).delete(); prefs.edit().remove("readyVersion").apply() }
                 Sleep.rearm(ctx); WindowAlarm.scheduleNext(ctx); Rules.scheduleNflCheck(ctx); Updater.scheduleDaily(ctx)
+                try { WakeUp.schedule(ctx) } catch (e: Exception) { }
                 HomeRestore.run(ctx)
+                // Updated while the TV is off: land on home now. While on (you're watching
+                // something), it happens a few minutes after the TV next goes off.
+                // Updated while you were on the home screen (a manual install): Android briefly
+                // shows the app underneath while this one restarts; put the home screen straight back.
+                val on = ctx.getSystemService(PowerManager::class.java).isInteractive
+                if (on && prefs.getBoolean("homeWasOnTop", false)) HomeReturn.now(ctx)
+                if (!on) HomeReturn.schedule(ctx, 5_000L)
                 // Fresh version: pick up the latest channel codes right away.
                 val pending = goAsync()
                 Thread { try { Updater.check(ctx) } catch (e: Exception) { } finally { pending.finish() } }.start()
             }
             HomeRestore.ACTION -> HomeRestore.run(ctx)
+            HomeReturn.ACTION -> HomeReturn.run(ctx)
             Updater.ACTION_CHECK, Intent.ACTION_BOOT_COMPLETED -> {
-                if (intent.action == Intent.ACTION_BOOT_COMPLETED) { Sleep.rearm(ctx); WindowAlarm.scheduleNext(ctx) }
+                if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
+                    Sleep.rearm(ctx); WindowAlarm.scheduleNext(ctx); try { WakeUp.schedule(ctx) } catch (e: Exception) { }
+                }
                 val pending = goAsync()
                 Thread {
                     try {
                         Updater.check(ctx)
                         if (ctx.getSystemService(PowerManager::class.java).isInteractive) Updater.installIfIdleOnHome(ctx)
-                        else Updater.installIfReady(ctx)
+                        else { Updater.installIfReady(ctx); HomeReturn.run(ctx) }   // nightly backstop
                     }
                     catch (e: Exception) { } finally {
                         Updater.scheduleDaily(ctx); pending.finish()
@@ -323,6 +351,62 @@ class InstallResultReceiver : BroadcastReceiver() {
                 prefs.edit().putBoolean("needsOk", true).apply()
             }
         }
+    }
+}
+
+/**
+ * The TV always wakes up on the home screen. A few minutes after the TV goes off (or right
+ * after an update while it's off), whatever app was open is put behind the home screen, so the
+ * next morning starts here instead of inside Prime or YouTube TV. Turning the TV back on within
+ * those few minutes keeps you where you were. If Android delayed the alarm, the next TV-on
+ * catches it instead.
+ */
+object HomeReturn {
+    const val ACTION = "com.jett.launcher.GO_HOME"
+    private const val GRACE_MS = 3 * 60_000L
+
+    private fun pi(ctx: Context) = PendingIntent.getBroadcast(ctx, 10,
+        Intent(ctx, UpdateAlarmReceiver::class.java).setAction(ACTION),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+    /** TV just went off. */
+    fun onScreenOff(ctx: Context) {
+        ctx.getSharedPreferences("updater", Context.MODE_PRIVATE).edit().putLong("offAt", System.currentTimeMillis()).apply()
+        schedule(ctx, GRACE_MS)
+    }
+
+    fun schedule(ctx: Context, delayMs: Long) {
+        val am = ctx.getSystemService(AlarmManager::class.java)
+        val at = System.currentTimeMillis() + delayMs
+        try { am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi(ctx)) }
+        catch (e: SecurityException) { am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi(ctx)) }
+    }
+
+    /** TV just came on: cancel the pending return; if it never ran (Android held it), go home now. */
+    fun onScreenOn(ctx: Context) {
+        ctx.getSystemService(AlarmManager::class.java).cancel(pi(ctx))
+        val prefs = ctx.getSharedPreferences("updater", Context.MODE_PRIVATE)
+        val offAt = prefs.getLong("offAt", 0); prefs.edit().remove("offAt").apply()
+        if (offAt > 0 && System.currentTimeMillis() - offAt >= GRACE_MS) go(ctx, force = true)
+    }
+
+    /** Right now, TV on or off (after an update that happened on the home screen). */
+    fun now(ctx: Context) = go(ctx, force = true)
+
+    /** Alarm fired: only acts while the TV is still off. */
+    fun run(ctx: Context) {
+        if (ctx.getSystemService(PowerManager::class.java).isInteractive) return
+        go(ctx, force = false)
+    }
+
+    private fun go(ctx: Context, force: Boolean) {
+        // Home already on top (or the kickoff countdown is up): nothing to do.
+        if ((MainActivity.homeOnTop && MainActivity.alive) || CountdownActivity.showing) return
+        if (!force && ctx.getSystemService(PowerManager::class.java).isInteractive) return
+        try {
+            ctx.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                .setPackage(ctx.packageName).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED))
+        } catch (e: Exception) { Log.w("JettUpdater", "Go home failed", e) }
     }
 }
 

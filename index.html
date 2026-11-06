@@ -261,6 +261,13 @@ nav.tabs button.on svg { color: var(--gold); }
 .chrow:first-child { border-top: 0; }
 .chrow .round { width: 34px; height: 34px; }
 .fade-in { animation: fi .4s ease both; }
+.stale { opacity: .42; pointer-events: none; filter: saturate(.4); transition: opacity .3s; }
+.asleepnote { display: flex; flex-direction: column; gap: 4px; border-color: rgba(232,194,122,.28); }
+.asleepnote b { font-family: "Cormorant", serif; font-size: 21px; font-weight: 500; }
+.asleepnote span { font-size: 13px; color: var(--ink-2); line-height: 1.45; }
+.status.wait .dot { background: var(--ink-3); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+a.btn { text-decoration: none; display: flex; align-items: center; justify-content: center; }
 @keyframes fi { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .spacer { height: 8px; }
 .center { text-align: center; }
@@ -308,6 +315,7 @@ let CAT = null;        // catalog
 let tab = store.get("jett.tab") || "now";
 let tvVolume = null, tvMuted = false;
 let STALE = false;     // away and the box hasn't answered: showing the last known state
+let UPDATING = false;  // away, opened on the saved state, asking the box for fresh news
 let stAt = Date.now(); // when ST arrived (the clock runs on from its time)
 /* Away, the app opens on the last state it saw (the box may be asleep). */
 function cacheSave() { if (RELAY) try { store.set("jett.cache", JSON.stringify({ S, ST, CAT: CAT && { ...CAT, photos: [] }, at: stAt })); } catch (e) {} }
@@ -350,7 +358,7 @@ async function unseal(sealed) {
 function relayListen() {
   if (R.ready) return R.ready;
   R.ready = new Promise(res => {
-    const es = new EventSource(`${NTFY}${RELAY.topic}-r/sse`);
+    const es = new EventSource(`${NTFY}${RELAY.topic}-r/sse?since=30s`); R.es = es;
     es.onopen = () => res();
     es.onmessage = e => { try { onReply(JSON.parse(e.data).message || ""); } catch (x) {} };
     setTimeout(res, 4000);   // send anyway; replies are kept on the relay briefly
@@ -359,21 +367,29 @@ function relayListen() {
 }
 async function onReply(text) {
   if (!text.startsWith("R.")) return;
-  const a = text.split("."); const id = a[1], i = +a[2], n = +a[3], piece = a.slice(4).join(".");
-  const w = R.wait.get(id); if (!w || !(n > 0) || n > 64) return;
-  w.parts[i] = piece;
+  const a = text.split("."); const id = a[1], i = Number(a[2]), n = Number(a[3]), piece = a.slice(4).join(".");
+  const w = R.wait.get(id);
+  if (!w || !Number.isInteger(i) || !Number.isInteger(n) || n < 1 || n > 64 || i < 0 || i >= n) return;
+  if (w.n && w.n !== n) return;   // pieces of one reply all say the same count
+  w.n = n; w.parts[i] = piece;
   if (w.parts.filter(x => x !== undefined).length < n) return;
-  R.wait.delete(id); clearTimeout(w.timer);
-  try { w.res(JSON.parse(await unseal(w.parts.join("")))); } catch (e) { w.rej(new Error("bad reply")); }
+  let rep; try { rep = JSON.parse(await unseal(w.parts.join(""))); } catch (e) { w.parts = []; w.n = 0; return; }   // not genuine: keep waiting
+  if (rep.id !== id || !R.wait.has(id)) return;
+  R.wait.delete(id); clearTimeout(w.timer); w.res(rep);
 }
 async function relayApi(path, body, noReply) {
   await relayListen();
   const id = Array.from(crypto.getRandomValues(new Uint8Array(10)), b => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join("");
   const q = { id, t: Date.now(), m: body === undefined ? "GET" : "POST", p: path, b: body === undefined ? "" : JSON.stringify(body), nr: !!noReply };
+  const sealed = await seal(JSON.stringify(q));
+  if (sealed.length > 3900) throw new Error("toolong");   // one relay message holds 4,096 bytes
   const reply = new Promise((res, rej) => R.wait.set(id, { res, rej, parts: [], timer: setTimeout(() => { R.wait.delete(id); rej(new Error("asleep")); }, 15000) }));
   reply.catch(() => {});
   let r = null;
-  try { r = await fetch(NTFY + RELAY.topic, { method: "POST", body: await seal(JSON.stringify(q)), headers: { "X-Firebase": "no" } }); } catch (e) {}
+  for (let i = 0; i < 2 && !(r && r.ok); i++) {   // one quick retry (a dropped request, or a busy shared address)
+    if (i) await new Promise(z => setTimeout(z, 800));
+    try { r = await fetch(NTFY + RELAY.topic, { method: "POST", body: sealed, headers: { "X-Firebase": "no" } }); } catch (e) {}
+  }
   if (!r || !r.ok || noReply) { const w = R.wait.get(id); if (w) { clearTimeout(w.timer); R.wait.delete(id); } }
   if (!r || !r.ok) throw new Error(r && r.status === 429 ? "limit" : "offline");
   if (noReply) return { ok: true };   // remote key presses: no answer needed (saves relay messages)
@@ -386,7 +402,7 @@ function photoUrl(id, w) {
   if (RELAY) return `${w <= 240 ? "t" : "m"}/${encodeURIComponent(id)}.jpg`;
   return `/api/photo?id=${encodeURIComponent(id)}&w=${w}&k=${token}`;
 }
-const relayNote = e => e.message === "asleep" ? "The box didn't answer — it may be asleep" : e.message === "limit" ? "Too many messages today — try again later" : e.message === "offline" ? "No internet connection" : "";
+const relayNote = e => e.message === "asleep" ? "The box didn't answer — it may be asleep" : e.message === "limit" ? "Too many messages today — try again later" : e.message === "offline" ? "No internet connection" : e.message === "toolong" ? "Too big to send from away — do this one at home" : "";
 
 async function api(path, body) {
   if (RELAY) return relayApi(path, body, body?.do === "key");
@@ -410,8 +426,8 @@ function save(path, val, quiet) {
     try { const r = await api("/api/settings", patch); S = r.settings; cacheSave(); if (!quiet) toast("Saved"); refreshState(); }
     catch (e) {
       // Away: the change waits on the relay (12 h) and the box applies it when it wakes.
-      if (e.message === "asleep") { cacheSave(); toast("Sent. The box is asleep — it'll apply this when it wakes."); }
-      else if (e.message !== "pair") toast(RELAY ? relayNote(e) || "Couldn't save" : "Couldn't save — is the TV on Wi-Fi?", true);
+      if (e.message === "asleep") { cacheSave(); toast("Sent. The box isn't answering — it'll apply this next time it checks in."); }
+      else if (e.message !== "pair") { toast(RELAY ? relayNote(e) || "Couldn't save" : "Couldn't save — is the TV on Wi-Fi?", true); if (e.message === "toolong") refreshState(); }
     }
   }, 450);
 }
@@ -460,7 +476,7 @@ function setSky() {
 }
 function div(html, cls) { const d = document.createElement("div"); if (cls) d.className = cls; d.innerHTML = html; return d; }
 function header(eyebrow, title) {
-  const st = STALE ? ["lost", "Box asleep"] : !ST ? ["lost", "Connecting"] : ST.tvOn ? ["on", ST.photoMode ? "Photo mode" : "TV on"] : ["off", "TV asleep"];
+  const st = UPDATING ? ["wait", "Updating…"] : STALE ? ["lost", "Not answering"] : !ST ? ["lost", "Connecting"] : ST.tvOn ? ["on", ST.photoMode ? "Photo mode" : "TV on"] : ["off", "TV asleep"];
   return `<div class="top"><div><div class="eyebrow">${esc(eyebrow)}</div><h1 class="display">${title}</h1></div><span class="status ${st[0]}"><i class="dot"></i>${st[1]}</span></div>`;
 }
 function swHtml(id, on, label) { return `<label class="sw"><input type="checkbox" id="${id}" ${on ? "checked" : ""} aria-label="${esc(label || id)}"><span></span></label>`; }
@@ -473,6 +489,8 @@ function viewNow() {
   const chans = favChannels();
   const v = div(`
     ${header(nyNow().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }), `${greet()}, <em>${esc(get("name", "Jett"))}</em>`)}
+    ${STALE ? `<div class="card asleepnote mt16"><b>The box isn't answering</b><span>Probably asleep (or the home internet is down). Showing what it last reported${stAt ? ", " + new Date(stAt).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" }) : ""}. Changes still save — the box picks them up the next time it checks in (it tries every 15 minutes).</span><button class="btn mt12" id="recheck">Check again</button></div>` : ""}
+    <div class="${STALE ? "stale" : ""}">
     ${tvOn ? `<div class="hero" id="hero" style="background-image:url('${RELAY ? (ST.nowPhoto ? photoUrl(ST.nowPhoto.id, 900) : "") : `/api/now.jpg?t=${encodeURIComponent(ST.nowPhoto?.id || "")}&k=${token}`}')">
         ${photo?.caption ? `<div class="cap">${esc(photo.caption)}</div>` : ""}
         <div class="tag"><span class="pill">${ST.photoMode ? "On the TV now" : ST.onHome ? "Home screen" : "In an app"}</span></div></div>`
@@ -492,7 +510,7 @@ function viewNow() {
       <button class="round" id="vup" aria-label="Volume up">${ic("plus", 2)}</button>
       <div class="n num" id="vn">${tvVolume ?? "–"}</div>
     </div>
-    <div class="row between mt8"><span class="tiny">The TV's own volume, set over Wi-Fi</span><button class="chip ${tvMuted ? "on" : ""}" id="mute">${ic("mute")}<span>${tvMuted ? "Muted" : "Mute"}</span></button></div></div>
+    <div class="row between mt8"><span class="tiny">${RELAY ? "The TV's own volume, from anywhere" : "The TV's own volume, set over Wi-Fi"}</span><button class="chip ${tvMuted ? "on" : ""}" id="mute">${ic("mute")}<span>${tvMuted ? "Muted" : "Mute"}</span></button></div></div>
     <h2 class="sec">Watch</h2>
     <div class="tiles" id="chans">${chans.map(c => `<button class="tile" data-ch="${esc(c)}"><span><i class="live-dot"></i>Live</span><b>${esc(SHORT[c] || c)}</b></button>`).join("")}
       <button class="tile" id="allch"><span>Guide</span><b>More…</b></button></div>
@@ -509,6 +527,7 @@ function viewNow() {
       </div>
       <div class="grid3 mt12"><button class="btn" data-k="KEY_RETURN">${ic("back")}Back</button><button class="btn" id="rhome">${ic("home")}Home</button><button class="btn" data-k="KEY_PLAY">${ic("play")}Play</button></div>
     </div>
+    </div>
     <p class="tiny center mt16">${ST ? `Jett Home ${esc(ST.version)}` : ""}</p>`);
   // wiring
   $("#pw", v).onclick = () => tvOn ? act({ do: "off" }, "Turning off").then(later) : act({ do: "on" }, "Turning on").then(later);
@@ -520,7 +539,7 @@ function viewNow() {
   paint();
   vol.oninput = paint;
   vol.onchange = () => setVolume(+vol.value);
-  let reread = 0; const step = k => { act({ do: "key", key: k }).then(() => { clearTimeout(reread); reread = setTimeout(readVolume, 900); }); };
+  let reread = 0; const step = k => { act({ do: "key", key: k }).then(() => { clearTimeout(reread); reread = setTimeout(readVolume, RELAY ? 2500 : 900); }); };
   $("#vdn", v).onclick = () => { vol.value = Math.max(0, +vol.value - 1); paint(); step("KEY_VOLDOWN"); };
   $("#vup", v).onclick = () => { vol.value = Math.min(50, +vol.value + 1); paint(); step("KEY_VOLUP"); };
   $("#mute", v).onclick = () => act({ do: "key", key: "KEY_MUTE" }, tvMuted ? "Sound on" : "Muted").then(() => setTimeout(readVolume, 700));
@@ -529,13 +548,19 @@ function viewNow() {
   v.querySelectorAll("[data-yt]").forEach(b => b.onclick = () => act({ do: "open", target: "youtube:" + b.dataset.yt }, `Playing ${soundOf(b.dataset.yt)?.title || "video"}`).then(later));
   v.querySelectorAll("[data-app]").forEach(b => b.onclick = () => act({ do: "open", target: "app:" + b.dataset.app }, "Opening " + b.querySelector("b").textContent));
   v.querySelectorAll("[data-k]").forEach(b => b.onclick = () => { if (navigator.vibrate) navigator.vibrate(8); act({ do: "key", key: b.dataset.k }); });
+  if ($("#recheck", v)) $("#recheck", v).onclick = e => { e.currentTarget.textContent = "Checking…"; UPDATING = true; R.ready = null; try { R.es?.close(); } catch (x) {} refreshState().then(() => { UPDATING = false; if (!sheetEl) render(); }); };
   if ($("#rhome", v)) $("#rhome", v).onclick = () => act({ do: "home" });
   if (tvOn && tvVolume === null) readVolume();
   $("#livebar", v).replaceWith(liveStrip()); loadBar();
   return v;
 }
 let BAR = null;
-async function loadBar() { try { BAR = await api("/api/bar"); const el = document.getElementById("livebar"); if (el) el.replaceWith(liveStrip()); const lb = document.getElementById("barlabel"); if (lb) lb.textContent = BAR?.label || ""; } catch (e) {} }
+let barAt = 0, barBusy = false;
+async function loadBar() {
+  // Away, the bar is asked for at most once a minute (relay messages are limited).
+  if (barBusy || (RELAY && BAR && Date.now() - barAt < 60000) || STALE) { return; }
+  barBusy = true;
+  try { BAR = await api("/api/bar"); barAt = Date.now(); const el = document.getElementById("livebar"); if (el) el.replaceWith(liveStrip()); const lb = document.getElementById("barlabel"); if (lb) lb.textContent = BAR?.label || ""; } catch (e) {} finally { barBusy = false; } }
 function teamImg(src) { return src ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">` : ""; }
 function liveStrip() {
   const wrap = document.createElement("div"); wrap.id = "livebar";
@@ -560,8 +585,13 @@ function favChannels() {
   const base = [...idle, "NFL RedZone", "Fox News", "ESPN2", "NBC", "CBS", "FOX", "ABC", "TNT", "BTN"];
   return [...new Set(base)].slice(0, 8);
 }
+let volBusy = false;
 async function readVolume() {
-  try { const r = await act({ do: "getVolume" }); if (r.muted != null && r.muted !== tvMuted) { tvMuted = r.muted; const m = $("#mute"); if (m) { m.classList.toggle("on", tvMuted); m.querySelector("span").textContent = tvMuted ? "Muted" : "Mute"; } } if (r.volume != null) { tvVolume = r.volume; if (tab === "now") { const vol = $("#vol"); if (vol) { vol.value = tvVolume; vol.dispatchEvent(new Event("input")); } } } } catch (e) {}
+  if (volBusy || STALE) return; volBusy = true;
+  try { await readVolumeNow(); } finally { volBusy = false; }
+}
+async function readVolumeNow() {
+  try { const r = await api("/api/action", { do: "getVolume" }); /* quiet: a background read */ if (r.muted != null && r.muted !== tvMuted) { tvMuted = r.muted; const m = $("#mute"); if (m) { m.classList.toggle("on", tvMuted); m.querySelector("span").textContent = tvMuted ? "Muted" : "Mute"; } } if (r.volume != null) { tvVolume = r.volume; if (tab === "now") { const vol = $("#vol"); if (vol) { vol.value = tvVolume; vol.dispatchEvent(new Event("input")); } } } } catch (e) {}
 }
 async function setVolume(n) {
   toast(`Volume ${n}…`);
@@ -985,22 +1015,22 @@ function viewHome() {
       <div class="field"><div><span>Weather by the clock</span><div class="tiny">Temperature by the clock, with rain warnings</div></div>${swHtml("wx", get("home.weather", true), "Weather")}</div>
       <div class="field"><span>Sleep tile from</span><select id="sf">${[19, 20, 21, 22, 23].map(h => `<option value="${h}" ${get("home.sleepFrom", 22) == h ? "selected" : ""}>${fmtTime(h + ":00")}</option>`).join("")}</select></div>
     </div>
+    <h2 class="sec">Anywhere <small>${RELAY ? "you're using it now" : "off home Wi-Fi"}</small></h2>
+    <div class="card list">
+      ${RELAY ? `<div class="item"><div class="label"><b>Connected through a relay</b><span>Sealed end to end — the relay (ntfy.sh) only sees scrambled text. If the box isn't answering (usually asleep), changes wait on the relay and apply the next time it checks in (it tries every 15 minutes). Remote taps and the volume only work while the box is awake. The free relay allows about 250 messages a day; normal use is well under that.</span></div></div>`
+      : `<div class="item"><div class="label"><b>Use it anywhere</b><span>The same app from the office or on cellular. One-time setup on this Wi-Fi.</span></div><button class="chip on" id="anyw">Set up</button></div>`}
+    </div>
     <h2 class="sec">Apps <small>order on the TV</small></h2>
     <div class="card list" id="al">${sorted.map((a, i) => `<div class="item">${RELAY ? "" : `<img src="/api/appicon?key=${encodeURIComponent(a.key)}&k=${token}" alt="" style="width:64px;height:36px;object-fit:cover;border-radius:8px;flex:none;${hidden.has(a.key) ? "opacity:.35" : ""}" onerror="this.style.visibility='hidden'">`}<div class="label"><b style="${hidden.has(a.key) ? "color:var(--ink-3)" : ""}">${esc(a.label)}</b></div>
       <button class="round" data-mv="${i}:-1" aria-label="Move up" ${i === 0 ? "disabled style='opacity:.3'" : ""}>${ic("up", 2)}</button>
       <button class="round" data-mv="${i}:1" aria-label="Move down" ${i === sorted.length - 1 ? "disabled style='opacity:.3'" : ""}>${ic("down", 2)}</button>
       ${swHtml("app_" + a.key, !hidden.has(a.key), "Show " + a.label)}</div>`).join("")}</div>
-    <h2 class="sec">Anywhere <small>${RELAY ? "you're using it now" : "off home Wi-Fi"}</small></h2>
-    <div class="card list">
-      ${RELAY ? `<div class="item"><div class="label"><b>Connected through a relay</b><span>Sealed end to end — the relay (ntfy.sh) only sees scrambled text. If the box is asleep, changes wait up to 12 hours and apply when it wakes.</span></div></div>`
-      : `<div class="item"><div class="label"><b>Use it anywhere</b><span>The same app from the office or on cellular. One-time setup on this Wi-Fi.</span></div><button class="chip on" id="anyw">Set up</button></div>`}
-    </div>
     <h2 class="sec">This phone</h2>
     <div class="card list">
       <div class="item"><div class="label"><b>Add to your home screen</b><span>In Safari: Share → Add to Home Screen. Opens like an app.</span></div></div>
       <div class="item"><div class="label"><b>Connection</b><span class="num">${RELAY ? "Anywhere (relay)" : esc(location.host) + " · home Wi-Fi"}</span></div></div>
       <div class="item"><div class="label"><b>Version</b><span>${esc(ST?.version || "")}</span></div></div>
-      <div class="item"><div class="label"><b>Forget this phone</b><span>${RELAY ? "Removes the anywhere key from this phone" : "You'll need a new code from the TV"}</span></div><button class="chip" id="unpair">Forget</button></div>
+      <div class="item"><div class="label"><b>Forget this phone</b><span>${RELAY ? "Clears it here. Delete the home-screen icon too (it holds the key), or use Make a new key at home" : "You'll need a new code from the TV"}</span></div><button class="chip" id="unpair">Forget</button></div>
     </div>`);
   $("#wx", v).onchange = e => save("home.weather", e.target.checked);
   $("#sf", v).onchange = e => save("home.sleepFrom", +e.target.value);
@@ -1020,14 +1050,18 @@ function anywhereSheet(link) {
     <p class="sub">Opens the same app on a private page that reaches the box through a relay, from anywhere. Everything is sealed with a key that's only on the box and your phone.</p>
     <div class="card list">
       <div class="item"><div class="label"><b>1. Open the link</b><span>It opens in Safari (if it opens inside this app, tap the Safari icon)</span></div></div>
-      <div class="item"><div class="label"><b>2. Share → Add to Home Screen</b><span>From that page. Then use that icon everywhere — at home too.</span></div></div>
+      <div class="item"><div class="label"><b>2. Share → Add to Home Screen</b><span>From that page. Use the new icon when you're out; keep this one for home (it's faster, and the remote is instant).</span></div></div>
     </div>
     <a class="btn gold block mt16" id="ago" href="${esc(link)}" target="_blank" rel="noopener">Open the anywhere app</a>
     <button class="btn block mt12" id="acp">Copy link</button>
-    <p class="tiny mt16">The link is the key: don't share it. Lost a phone? Make a new key — old links stop working.</p>
+    <p class="tiny mt16">The link is the key: don't share it (it also stays in Safari's history). Lost a phone? Make a new key — old links stop working.</p>
     <button class="btn block danger mt12" id="arst">Make a new key</button>`);
   $("#acp", s).onclick = async () => { try { await navigator.clipboard.writeText(link); toast("Copied — paste it in Safari"); } catch (e) { prompt("Copy this link", link); } };
-  $("#arst", s).onclick = () => api("/api/remote", { reset: true }).then(r => { toast("New key made. Old links stop working."); anywhereSheet(r.link); }).catch(() => toast("The box didn't answer", true));
+  $("#arst", s).onclick = e => {
+    const b = e.currentTarget;
+    if (!b.dataset.sure) { b.dataset.sure = "1"; b.textContent = "Tap again — the anywhere icon will stop working"; setTimeout(() => { delete b.dataset.sure; b.textContent = "Make a new key"; }, 5000); return; }
+    api("/api/remote", { reset: true }).then(r => { toast("New key made. Old links stop working."); anywhereSheet(r.link); }).catch(() => toast("The box didn't answer", true));
+  };
 }
 
 /* ------------------------------------------------------------ sheets */
@@ -1121,19 +1155,21 @@ async function boot() {
   if (!RELAY && !token) { renderPair(); return; }
   // Away: open at once on the last state seen, then catch up.
   const cached = RELAY && cacheLoad();
-  if (cached) { STALE = true; renderTabs(); render(true); }
+  if (cached) { UPDATING = true; renderTabs(); render(true); }
   try {
     const [st, cat, photos] = await Promise.all([
       api("/api/state"), api(RELAY ? "/api/catalog?lite=1" : "/api/catalog"),
       RELAY ? fetch("photos.json").then(r => r.json()).catch(() => []) : null]);
-    S = st.settings; ST = st.status; stAt = Date.now(); STALE = false; CAT = cat; if (photos) CAT.photos = photos; setSky(); cacheSave();
+    S = st.settings; ST = st.status; stAt = Date.now(); STALE = false; UPDATING = false; CAT = cat; if (photos) CAT.photos = photos; setSky(); cacheSave();
     lastSig = JSON.stringify([S, { ...ST, time: 0 }]);
     renderTabs(); render(!cached);
   } catch (e) {
     if (e.message === "pair") return;
     if (cached) {   // the box may be asleep: stay on the saved state; photos still come from the site
+      UPDATING = false; STALE = true; if (!sheetEl) render();
       if (CAT && !(CAT.photos || []).length) fetch("photos.json").then(r => r.json()).then(p => { CAT.photos = p; if (tab === "backdrops" && !sheetEl) render(); }).catch(() => {});
-      toast(relayNote(e) || "The box didn't answer", true); return;
+      if (e.message !== "asleep") toast(relayNote(e) || "The box didn't answer", true);
+      return;
     }
     const why = RELAY ? (relayNote(e) || "The box didn't answer.") + " It may be asleep — try again in a few minutes." : "Can't reach the TV box right now. Make sure your phone is on your home Wi-Fi.";
     $("#app").innerHTML = `<div class="pair"><div class="mark">Jett <em>Home</em></div><p class="muted">${esc(why)}</p><button class="btn gold block mt16" onclick="boot()">Try again</button></div>`;
@@ -1149,9 +1185,15 @@ function renderRelaySetup() {
       <div class="item"><div class="label"><b>3. Share → Add to Home Screen</b><span>From that page, so the key comes with it</span></div></div>
     </div></div>`;
 }
-// Home: every 15 s. Away: every minute (each check is a relay message; ntfy.sh allows 250 a day).
-setInterval(() => { if (document.visibilityState === "visible" && linked() && S) refreshState(); }, RELAY ? 60000 : 15000);
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && linked() && S) { refreshState(); if (tab === "now" && !RELAY) readVolume(); } });
+// Home: every 15 s. Away: every 3 minutes (each check is two relay messages; ntfy.sh allows the box
+// 250 a day). Away, changes you make refresh right after anyway.
+setInterval(() => { if (document.visibilityState === "visible" && linked() && S) refreshState(); }, RELAY ? 180000 : 15000);
+document.addEventListener("visibilitychange", () => {
+  // iOS drops the relay listener in the background: start a fresh one on return.
+  // (A dead connection can still say "open" on iOS, so after 20 s away always start fresh.)
+  if (RELAY && document.visibilityState === "hidden") R.hiddenAt = Date.now();
+  if (RELAY && document.visibilityState === "visible" && R.es && (R.es.readyState !== 1 || Date.now() - (R.hiddenAt || 0) > 20000)) { try { R.es.close(); } catch (e) {} R.ready = null; }
+  if (document.visibilityState === "visible" && linked() && S) { refreshState(); if (tab === "now" && !RELAY) readVolume(); } });
 boot();
 </script>
 </body>

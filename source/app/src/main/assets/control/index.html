@@ -268,6 +268,31 @@ nav.tabs button.on svg { color: var(--gold); }
 .asleepnote span { font-size: 13px; color: var(--ink-2); line-height: 1.45; }
 .status.wait .dot { background: var(--ink-3); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .3; } }
+.cal { padding: 16px 12px 14px; }
+.cal-head { display: flex; align-items: center; justify-content: space-between; padding: 0 4px 12px; }
+.cal-head b { font-family: "Cormorant", serif; font-size: 24px; font-weight: 500; letter-spacing: .2px; }
+.cal-head b em { font-family: var(--italic); color: var(--gold); font-weight: 500; }
+.cal-nav { display: flex; gap: 6px; }
+.cal-nav button { width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: var(--glass-2); display: grid; place-items: center; color: var(--ink); }
+.cal-nav button:disabled { opacity: .3; }
+.cal-dow, .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.cal-dow span { text-align: center; font-size: 10.5px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--ink-3); padding-bottom: 6px; }
+.cd { position: relative; aspect-ratio: 1 / 1.18; border-radius: 12px; border: 1px solid transparent; background: rgba(255,255,255,.035);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 0; color: var(--ink); font: inherit; min-width: 0; }
+.cd .n { font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.cd .t { font-size: 10px; letter-spacing: .1px; color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cd.on { background: rgba(232,194,122,.09); }
+.cd.on .t { color: var(--gold); }
+.cd.custom { border-color: rgba(232,194,122,.55); }
+.cd.custom::after { content: ""; position: absolute; top: 5px; right: 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--gold); }
+.cd.skip .t { color: #e78b7b; }
+.cd.skip .n { opacity: .55; }
+.cd.today { box-shadow: inset 0 0 0 1.5px var(--ink); }
+.cd.past { opacity: .28; pointer-events: none; }
+.cd.blank { visibility: hidden; }
+.cd:active { transform: scale(.95); }
+.cal-key { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; padding-top: 14px; font-size: 11.5px; color: var(--ink-3); }
+.cal-key i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
 a.btn { text-decoration: none; display: flex; align-items: center; justify-content: center; }
 @keyframes fi { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .spacer { height: 8px; }
@@ -674,7 +699,10 @@ function viewMornings() {
       <div id="ngb"></div>
     </div>
     <div class="grid2 mt16"><button class="btn" id="oneoff">${ic("plus")}Another date</button><button class="btn" id="try">${ic("play")}Try it now</button></div>
-    <p class="tiny mt12" style="padding:0 4px">The TV only turns itself on if it's off, so it never interrupts you. The switch and the turn-off only happen if it's still on from the wake-up.</p>`);
+    <p class="tiny mt12" style="padding:0 4px">The TV only turns itself on if it's off, so it never interrupts you. The switch and the turn-off only happen if it's still on from the wake-up.</p>
+    <h2 class="sec">Calendar <small>tap a day to change it</small></h2>
+    <div class="card cal" id="cal"></div>`);
+  drawCal($("#cal", v));
   $("#wen", v).onchange = e => { save("wake.enabled", e.target.checked); render(); };
   v.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => editMorning({ kind: "day", d: +b.dataset.edit }));
   [1, 2, 3, 4, 5, 6, 7].forEach(d => { $("#d" + d, v).onchange = e => { const p = { ...defaultPlan(), ...dayPlan(d), on: e.target.checked }; save(`wake.week.${d}`, p); render(); }; });
@@ -699,6 +727,65 @@ function viewMornings() {
   $("#try", v).onclick = () => { const td = get(`wake.overrides.${tdy}`) || dayPlan(dow(nyNow())); if (!td.on) { toast("No wake-up today — try one from a day's editor"); return; } act({ do: "tryMorning" }, "Running today's wake-up").then(later).catch(() => {}); };
   return v;
 }
+/* ------------------------------------------------------------ calendar
+   Every wake-up for this month and the next two: the usual weekday plan, one-off days (gold
+   outline) and skipped days. Tap a day to change just that day, or its weekday. */
+let calOff = 0;   // months from this one (0–2)
+function planOn(iso) {
+  const ov = get("wake.overrides", {})[iso];
+  const p = ov || dayPlan(dow(new Date(iso + "T12:00")));
+  return { p, custom: !!ov && ov.on !== false, skip: !!ov && ov.on === false, usualOn: !!dayPlan(dow(new Date(iso + "T12:00"))).on };
+}
+function calTime(t) { const [h, m] = t.split(":").map(Number); return `${(h % 12) || 12}${m ? ":" + String(m).padStart(2, "0") : ""}${h >= 12 ? "p" : "a"}`; }
+function drawCal(el) {
+  const enabled = get("wake.enabled", true);
+  const today = nyNow(); const tdy = isoDate(today);
+  const first = new Date(today.getFullYear(), today.getMonth() + calOff, 1);
+  const days = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  const lead = dow(first) - 1;   // Monday-first weeks
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push(`<span class="cd blank"></span>`);
+  for (let d = 1; d <= days; d++) {
+    const iso = isoDate(new Date(first.getFullYear(), first.getMonth(), d));
+    const { p, custom, skip } = planOn(iso);
+    const on = enabled && p.on;
+    const cls = ["cd", on ? "on" : "", custom ? "custom" : "", skip ? "skip" : "", iso === tdy ? "today" : "", iso < tdy ? "past" : ""].join(" ");
+    const t = skip ? "Skip" : on ? calTime(p.time) : "";
+    cells.push(`<button class="${cls}" data-cal="${iso}" aria-label="${esc(dateLabel(iso))}: ${esc(on ? fmtTime(p.time) : skip ? "skipped" : "no wake-up")}"><span class="n">${d}</span><span class="t">${t || "&nbsp;"}</span></button>`);
+  }
+  el.innerHTML = `<div class="cal-head"><b>${esc(first.toLocaleDateString("en-US", { month: "long" }))} <em>${first.getFullYear()}</em></b>
+      <div class="cal-nav"><button id="cprev" aria-label="Previous month" ${calOff <= 0 ? "disabled" : ""}>${ic("left", 2)}</button><button id="cnext" aria-label="Next month" ${calOff >= 2 ? "disabled" : ""}>${ic("right", 2)}</button></div></div>
+    <div class="cal-dow">${[1, 2, 3, 4, 5, 6, 7].map(d => `<span>${DSH[d].slice(0, 2)}</span>`).join("")}</div>
+    <div class="cal-grid">${cells.join("")}</div>
+    <div class="cal-key"><span><i style="background:rgba(232,194,122,.35)"></i>Usual</span><span><i style="border:1.5px solid var(--gold)"></i>One-off</span><span><i style="background:#e78b7b"></i>Skipped</span></div>
+    ${enabled ? "" : `<p class="tiny center mt8">Wake-ups are off — turn them on at the top to use these.</p>`}`;
+  $("#cprev", el).onclick = () => { calOff = Math.max(0, calOff - 1); drawCal(el); };
+  $("#cnext", el).onclick = () => { calOff = Math.min(2, calOff + 1); drawCal(el); };
+  el.querySelectorAll("[data-cal]").forEach(b => b.onclick = () => calDay(b.dataset.cal));
+}
+function calDay(iso) {
+  const { p, custom, skip, usualOn } = planOn(iso);
+  const wd = dow(new Date(iso + "T12:00"));
+  const status = skip ? "Skipped" : custom ? "One-off morning" : p.on ? `Usual ${DAYS[wd]}` : "No wake-up";
+  const s = sheet(`<h3>${esc(new Date(iso + "T12:00").toLocaleDateString("en-US", { weekday: "long" }))} <em>${esc(new Date(iso + "T12:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }))}</em></h3>
+    <p class="sub">${esc(status)}</p>
+    ${p.on && !skip ? `<div class="card"><div class="timeline" style="margin-top:0">
+      <div class="tl"><i></i><div><b>${esc(fmtTime(p.time))}</b> <span>${esc(contentName(p.content))}${p.volume >= 0 ? " · volume " + p.volume : ""}</span></div></div>
+      ${p.switchTo ? `<div class="tl s"><i></i><div><b>${esc(fmtTime(p.switchAt))}</b> <span>${esc(p.switchTo)}${p.switchVolume >= 0 ? " · volume " + p.switchVolume : ""}</span></div></div>` : ""}
+      ${p.off ? `<div class="tl o"><i></i><div><b>${esc(fmtTime(p.off))}</b> <span>Off</span></div></div>` : ""}
+    </div></div>` : ""}
+    <div class="grid2 mt16">
+      <button class="btn gold" id="cde">${ic("clock")}${custom ? "Edit day" : p.on && !skip ? "Change day" : "Add wake-up"}</button>
+      ${custom || skip ? `<button class="btn" id="cdu">Back to usual</button>` : p.on ? `<button class="btn" id="cds">Skip this day</button>` : `<button class="btn" id="cdw">Every ${esc(DAYS[wd])}</button>`}
+    </div>
+    ${(custom || skip || p.on) ? `<button class="btn block ghost mt8" id="cdw2">Edit every ${esc(DAYS[wd])}${usualOn ? "" : " (usually off)"}</button>` : ""}`);
+  const again = () => { closeSheet(); render(); };
+  $("#cde", s).onclick = () => { closeSheet(); setTimeout(() => editMorning({ kind: "date", date: iso }), 260); };
+  if ($("#cdu", s)) $("#cdu", s).onclick = () => { delOverride(iso); again(); };
+  if ($("#cds", s)) $("#cds", s).onclick = () => { save(`wake.overrides.${iso}`, { on: false }); toast(`Skipping ${dateLabel(iso)}`); again(); };
+  [$("#cdw", s), $("#cdw2", s)].forEach(b => { if (b) b.onclick = () => { closeSheet(); setTimeout(() => editMorning({ kind: "day", d: wd }), 260); }; });
+}
+
 function delOverride(k) { save("wake.overrides." + k, null); delete S.wake.overrides[k]; toast("Back to the usual"); }
 function defaultPlan() { return { on: true, time: "08:00", content: "youtube:FxAgAyZYXJ8", volume: 15, switchAt: "09:00", switchTo: "CNBC", switchVolume: 10, off: "11:00" }; }
 function pickDate() {

@@ -727,7 +727,7 @@ function viewMornings() {
   $("#try", v).onclick = () => { const td = get(`wake.overrides.${tdy}`) || dayPlan(dow(nyNow())); if (!td.on) { toast("No wake-up today — try one from a day's editor"); return; } act({ do: "tryMorning" }, "Running today's wake-up").then(later).catch(() => {}); };
   return v;
 }
-/* ------------------------------------------------------------ calendar
+/* ------------------------------------------------------------ calendar (Sunday first)
    Every wake-up for this month and the next two: the usual weekday plan, one-off days (gold
    outline) and skipped days. Tap a day to change just that day, or its weekday. */
 let calOff = 0;   // months from this one (0–2)
@@ -742,7 +742,7 @@ function drawCal(el) {
   const today = nyNow(); const tdy = isoDate(today);
   const first = new Date(today.getFullYear(), today.getMonth() + calOff, 1);
   const days = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
-  const lead = dow(first) - 1;   // Monday-first weeks
+  const lead = first.getDay();   // Sunday-first weeks, like a normal calendar
   const cells = [];
   for (let i = 0; i < lead; i++) cells.push(`<span class="cd blank"></span>`);
   for (let d = 1; d <= days; d++) {
@@ -755,7 +755,7 @@ function drawCal(el) {
   }
   el.innerHTML = `<div class="cal-head"><b>${esc(first.toLocaleDateString("en-US", { month: "long" }))} <em>${first.getFullYear()}</em></b>
       <div class="cal-nav"><button id="cprev" aria-label="Previous month" ${calOff <= 0 ? "disabled" : ""}>${ic("left", 2)}</button><button id="cnext" aria-label="Next month" ${calOff >= 2 ? "disabled" : ""}>${ic("right", 2)}</button></div></div>
-    <div class="cal-dow">${[1, 2, 3, 4, 5, 6, 7].map(d => `<span>${DSH[d].slice(0, 2)}</span>`).join("")}</div>
+    <div class="cal-dow">${[7, 1, 2, 3, 4, 5, 6].map(d => `<span>${DSH[d].slice(0, 2)}</span>`).join("")}</div>
     <div class="cal-grid">${cells.join("")}</div>
     <div class="cal-key"><span><i style="background:rgba(232,194,122,.35)"></i>Usual</span><span><i style="border:1.5px solid var(--gold)"></i>One-off</span><span><i style="background:#e78b7b"></i>Skipped</span></div>
     ${enabled ? "" : `<p class="tiny center mt8">Wake-ups are off — turn them on at the top to use these.</p>`}`;

@@ -51,7 +51,7 @@ object Router {
             return true
         }
         if (target.startsWith("youtube:")) {
-            val id = target.removePrefix("youtube:")
+            val id = AppSettings.resolve(target).removePrefix("youtube:")   // "rotate" → today's video
             return tryDeepLink(ctx, "youtube", "https://www.youtube.com/watch?v=$id") || openApp(ctx, "youtube")
         }
         return openChannel(ctx, target)

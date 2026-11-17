@@ -17,6 +17,7 @@ class JettApp : Application() {
         super.onCreate()
         Rules.appContext = applicationContext
         AppSettings.app = applicationContext
+        try { AppSettings.migrate(applicationContext) } catch (e: Exception) { android.util.Log.w("JettApp", "settings migrate", e) }
         // The phone control app (served by the box on the home Wi-Fi).
         try { ControlServer.start(applicationContext) } catch (e: Exception) { android.util.Log.w("JettApp", "control server", e) }
         try { Relay.start(applicationContext) } catch (e: Exception) { android.util.Log.w("JettApp", "relay", e) }

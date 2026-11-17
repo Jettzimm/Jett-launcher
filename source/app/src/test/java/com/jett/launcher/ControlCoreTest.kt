@@ -149,6 +149,18 @@ class ControlCoreTest {
         assertFalse(ControlCore.hostOk("evil.example.com:8765"))
     }
 
+    @Test fun rotationDiffersDailyAndWeekdaysReachAll() {
+        val pool = (1..13).map { "v$it" }
+        val mon = LocalDate.of(2026, 11, 16)
+        val days = (0 until 13 * 7).map { mon.plusDays(it.toLong()) }
+        assertTrue(days.zipWithNext().all { (a, b) -> ControlCore.rotationPick(pool, a) != ControlCore.rotationPick(pool, b) })
+        val weekdays = days.filter { it.dayOfWeek.value <= 5 }.map { ControlCore.rotationPick(pool, it) }.toSet()
+        assertEquals(pool.toSet(), weekdays)
+        // a pool that's a multiple of 7 drops its last one so weekdays still cycle
+        val p14 = (1..14).map { "v$it" }
+        assertEquals(13, days.filter { it.dayOfWeek.value <= 5 }.map { ControlCore.rotationPick(p14, it) }.toSet().size)
+    }
+
     @Test fun daysSpec() {
         assertEquals(5, ControlCore.days("1-5").size)
         assertEquals(2, ControlCore.days("6,7").size)

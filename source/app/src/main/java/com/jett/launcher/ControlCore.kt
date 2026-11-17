@@ -115,6 +115,17 @@ object ControlCore {
         return null
     }
 
+    /**
+     * The nature video for [date] from [pool]: a different one each day, the same one all day
+     * (so the phone's calendar can show it ahead). A pool sized a multiple of 7 drops its last
+     * video, so weekday-only mornings still cycle through all of the rest.
+     */
+    fun rotationPick(pool: List<String>, date: LocalDate): String {
+        require(pool.isNotEmpty())
+        val n = if (pool.size % 7 == 0 && pool.size > 1) pool.size - 1 else pool.size
+        return pool[Math.floorMod(date.toEpochDay(), n.toLong()).toInt()]
+    }
+
     /** Drops one-off days that are already over (so the list doesn't grow forever). */
     fun pruneOverrides(wake: JSONObject, today: LocalDate): JSONObject {
         val ov = wake.optJSONObject("overrides") ?: return wake

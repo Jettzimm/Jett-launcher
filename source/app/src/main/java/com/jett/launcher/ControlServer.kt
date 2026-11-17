@@ -247,6 +247,7 @@ object ControlServer {
     private fun ev(e: ControlCore.Event?) = e?.let {
         JSONObject().put("at", it.at.format(LOCAL)).put("date", it.date.toString())
             .put("content", it.m.content).put("volume", it.m.volume).put("switchTo", it.m.switchTo)
+            .put("plays", AppSettings.resolve(it.m.content, it.date))   // the rotation's pick for that morning
             .put("switchVolume", it.m.switchVolume)
     }
 
@@ -284,10 +285,12 @@ object ControlServer {
             .filter { it.length > 2 || it in setOf("CBS", "NBC", "FOX", "ABC", "CNN", "TNT", "TBS", "FS1", "FS2", "BTN", "USA", "CW") }
             .sorted()
         val sounds = JSONArray()
-        for ((id, title, sub) in AppSettings.SOUNDS) sounds.put(JSONObject().put("id", id).put("title", title).put("sub", sub))
+        for ((id, title, sub) in AppSettings.SOUNDS) sounds.put(JSONObject().put("id", id).put("title", title).put("sub", sub)
+            .put("rotation", id in AppSettings.ROTATION))
+        val rotation = JSONArray(AppSettings.ROTATION)
         val photos = JSONArray()
         if (withPhotos) for (p in PhotoIndex.all(app)) photos.put(JSONArray().put(p.id).put(p.phase).put(p.caption))
-        return JSONObject().put("apps", apps).put("channels", JSONArray(channels)).put("sounds", sounds)
+        return JSONObject().put("apps", apps).put("channels", JSONArray(channels)).put("sounds", sounds).put("rotation", rotation)
             .put("leagues", JSONArray(listOf("nfl", "cfb", "nhl", "nba", "mlb", "ufc"))).put("photos", photos)
     }
 

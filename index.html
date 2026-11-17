@@ -142,6 +142,8 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; bord
 .sounds::-webkit-scrollbar { display: none; }
 .sound { flex: none; width: 156px; scroll-snap-align: start; border-radius: 18px; overflow: hidden; background: var(--glass); border: 1px solid var(--line); text-align: left; }
 .sound .art { height: 88px; background: #222 center/cover; position: relative; }
+.sound .art.mosaic { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1px; background: #000; }
+.sound .art.mosaic i { background: #222 center/cover; }
 .sound .art::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, transparent 40%, rgba(0,0,0,.45)); }
 .sound .t { padding: 10px 12px 12px; }
 .sound .t b { display: block; font-family: var(--serif); font-size: 19px; font-weight: 600; line-height: 1.05; }
@@ -473,7 +475,17 @@ function dateLabel(iso) {
   const d = new Date(iso + "T12:00"); return d.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
 }
 function soundOf(id) { return (CAT?.sounds || []).find(s => s.id === id); }
-function contentName(c) {
+/* Nature rotation: a different video each morning, the same pick the box makes (RelayCore/
+   ControlCore.rotationPick: by day number, pool size kept off multiples of 7). */
+const ROTATE = "youtube:rotate";
+function rotationPick(iso) {
+  const pool = CAT?.rotation || []; if (!pool.length) return null;
+  const n = pool.length % 7 === 0 && pool.length > 1 ? pool.length - 1 : pool.length;
+  const [y, m, d] = iso.split("-").map(Number); const day = Math.floor(Date.UTC(y, m - 1, d) / 86400000);
+  return pool[((day % n) + n) % n];
+}
+function contentName(c, iso) {
+  if (c === ROTATE) { const id = iso && rotationPick(iso); const s = id && soundOf(id); return s ? s.title : "Nature rotation"; }
   if (!c || c === "home") return "Photos";
   if (c.startsWith("youtube:")) { const s = soundOf(c.slice(8)); return s ? s.title : "YouTube video"; }
   return c;
@@ -648,9 +660,9 @@ function channelSheet(title, current, pick, extra) {
 /* ------------------------------------------------------------ MORNINGS */
 function dayPlan(d) { return get(`wake.week.${d}`, {}); }
 function shortTime(t) { const s = fmtTime(t); return s.replace(":00", "").replace(" AM", "am").replace(" PM", "pm"); }
-function planSummary(p) {
+function planSummary(p, iso) {
   if (!p || !p.on) return "Off";
-  const parts = [contentName(p.content)];
+  const parts = [contentName(p.content, iso)];
   if (p.switchTo && p.switchTo !== p.content) parts.push(`${SHORT[p.switchTo] || p.switchTo} ${shortTime(p.switchAt)}`);
   if (p.off) parts.push(`off ${shortTime(p.off)}`);
   return parts.join(" → ");
@@ -668,7 +680,7 @@ function viewMornings() {
       ${enabled && n ? (() => { const t = fmtTimeParts(n.at.slice(11, 16));
         return `<div class="when num">${t[0]}<small>${t[1]}</small></div><div class="muted">${dateLabel(n.date)}</div>
         <div class="timeline">
-          <div class="tl"><i></i><div><b>${esc(contentName(n.content))}</b> <span>${n.volume >= 0 ? "at volume " + n.volume : ""}</span></div></div>
+          <div class="tl"><i></i><div><b>${esc(contentName(n.content, n.date))}</b> <span>${n.volume >= 0 ? "at volume " + n.volume : ""}${n.content === ROTATE ? " · rotating" : ""}</span></div></div>
           ${(ST.next.switch && ST.next.switch.date === n.date) ? `<div class="tl s"><i></i><div><b>${esc(ST.next.switch.switchTo)}</b> <span>at ${fmtTime(ST.next.switch.at.slice(11, 16))}${ST.next.switch.switchVolume >= 0 ? " · volume " + ST.next.switch.switchVolume : ""}</span></div></div>` : ""}
           ${(ST.next.off && ST.next.off.date === n.date) ? `<div class="tl o"><i></i><div><b>Off</b> <span>at ${fmtTime(ST.next.off.at.slice(11, 16))}</span></div></div>` : ""}
         </div>`; })() : `<div class="when" style="font-size:30px;font-weight:300">${enabled ? "Nothing planned" : "Wake-ups are off"}</div><div class="muted mt8">${enabled ? "Turn on a day below." : "Turn them back on with the switch."}</div>`}
@@ -676,7 +688,7 @@ function viewMornings() {
     <h2 class="sec">Tomorrow <small>${esc(new Date(tmw + "T12:00").toLocaleDateString("en-US", { weekday: "long" }))}</small></h2>
     <div class="card">
       <div class="row"><div class="grow"><b style="font-weight:600">${ov[tmw] ? (ov[tmw].on ? "Custom morning" : "Skipping tomorrow") : "Usual " + DAYS[dow(addDays(nyNow(), 1))]}</b>
-        <div class="tiny">${esc(tmwPlan.on ? fmtTime(tmwPlan.time) + " · " + planSummary(tmwPlan) : "No wake-up")}</div></div></div>
+        <div class="tiny">${esc(tmwPlan.on ? fmtTime(tmwPlan.time) + " · " + planSummary(tmwPlan, tmw) : "No wake-up")}</div></div></div>
       <div class="grid2 mt12">
         <button class="btn gold" id="ctm">${ic("clock")}${ov[tmw]?.on ? "Edit" : "Custom"}</button>
         ${ov[tmw] ? `<button class="btn" id="rtm">Back to usual</button>` : tmwPlan.on ? `<button class="btn" id="stm">Skip it</button>` : `<button class="btn" id="etm">Edit ${esc(DAYS[dow(addDays(nyNow(), 1))])}s</button>`}
@@ -690,7 +702,7 @@ function viewMornings() {
         ${swHtml("d" + d, !!p.on, DAYS[d] + " on")}
       </div>`; }).join("")}</div>
     ${Object.keys(ov).filter(k => k >= tdy && k !== tmw).length ? `<h2 class="sec">One-offs</h2><div class="card list">${Object.keys(ov).filter(k => k >= tdy && k !== tmw).sort().map(k => `
-      <div class="item"><div class="label"><b>${esc(dateLabel(k))}</b><span>${esc(ov[k].on ? fmtTime(ov[k].time) + " · " + planSummary(ov[k]) : "Skipped")}</span></div>
+      <div class="item"><div class="label"><b>${esc(dateLabel(k))}</b><span>${esc(ov[k].on ? fmtTime(ov[k].time) + " · " + planSummary(ov[k], k) : "Skipped")}</span></div>
       <button class="chip" data-ovedit="${k}">Edit</button><button class="chip" data-ovdel="${k}" aria-label="Remove">✕</button></div>`).join("")}</div>` : ""}
     <h2 class="sec">Bedtime <small>turns off every night</small></h2>
     <div class="card">
@@ -769,7 +781,7 @@ function calDay(iso) {
   const s = sheet(`<h3>${esc(new Date(iso + "T12:00").toLocaleDateString("en-US", { weekday: "long" }))} <em>${esc(new Date(iso + "T12:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }))}</em></h3>
     <p class="sub">${esc(status)}</p>
     ${p.on && !skip ? `<div class="card"><div class="timeline" style="margin-top:0">
-      <div class="tl"><i></i><div><b>${esc(fmtTime(p.time))}</b> <span>${esc(contentName(p.content))}${p.volume >= 0 ? " · volume " + p.volume : ""}</span></div></div>
+      <div class="tl"><i></i><div><b>${esc(fmtTime(p.time))}</b> <span>${esc(contentName(p.content, iso))}${p.volume >= 0 ? " · volume " + p.volume : ""}</span></div></div>
       ${p.switchTo ? `<div class="tl s"><i></i><div><b>${esc(fmtTime(p.switchAt))}</b> <span>${esc(p.switchTo)}${p.switchVolume >= 0 ? " · volume " + p.switchVolume : ""}</span></div></div>` : ""}
       ${p.off ? `<div class="tl o"><i></i><div><b>${esc(fmtTime(p.off))}</b> <span>Off</span></div></div>` : ""}
     </div></div>` : ""}
@@ -821,9 +833,11 @@ function editMorning(target) {
     s.querySelectorAll("#kind button").forEach(b => b.classList.toggle("on", b.dataset.k === kind()));
     const kb = $("#kbody", s);
     if (kind() === "nature") {
-      kb.innerHTML = `<div class="sounds">${(CAT?.sounds || []).map(x => `<button class="sound ${p.content === "youtube:" + x.id ? "on" : ""}" data-yt="${esc(x.id)}"><div class="art" style="background-image:url('${ytThumb(x.id)}')"></div><div class="t"><b>${esc(x.title)}</b><span>${esc(x.sub)}</span></div></button>`).join("")}</div>
+      const rot = (CAT?.rotation || []).slice(0, 4);
+      kb.innerHTML = `<div class="sounds"><button class="sound rotate ${p.content === ROTATE ? "on" : ""}" data-rot="1"><div class="art mosaic">${rot.map(id => `<i style="background-image:url('${ytThumb(id)}')"></i>`).join("")}</div><div class="t"><b>Rotate</b><span>A different scene each morning · ${(CAT?.rotation || []).length} videos</span></div></button>${(CAT?.sounds || []).map(x => `<button class="sound ${p.content === "youtube:" + x.id ? "on" : ""}" data-yt="${esc(x.id)}"><div class="art" style="background-image:url('${ytThumb(x.id)}')"></div><div class="t"><b>${esc(x.title)}</b><span>${esc(x.sub)}</span></div></button>`).join("")}</div>
         <div class="row mt8"><input type="text" id="ytl" placeholder="…or paste a YouTube link" autocomplete="off"></div>`;
       kb.querySelectorAll("[data-yt]").forEach(b => b.onclick = () => { p.content = "youtube:" + b.dataset.yt; drawKind(); });
+      kb.querySelector("[data-rot]").onclick = () => { p.content = ROTATE; drawKind(); };
       $("#ytl", kb).onchange = e => { const id = ytId(e.target.value); if (id) { p.content = "youtube:" + id; toast("Video set"); drawKind(); } else toast("That doesn't look like a YouTube link", true); };
     } else if (kind() === "channel") {
       kb.innerHTML = `<div class="card"><div class="field"><span>Channel</span><button class="chip on" id="pch">${esc(p.content)}</button></div></div>`;
@@ -848,7 +862,7 @@ function editMorning(target) {
   };
   s.querySelectorAll("#kind button").forEach(b => b.onclick = () => {
     const k = b.dataset.k;
-    if (k === "nature") p.content = "youtube:" + ((CAT?.sounds || [])[0]?.id || "FxAgAyZYXJ8");
+    if (k === "nature") p.content = ROTATE;
     else if (k === "channel") p.content = "CNBC"; else p.content = "home";
     drawKind();
   });

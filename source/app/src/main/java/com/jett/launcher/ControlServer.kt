@@ -296,6 +296,8 @@ object ControlServer {
     private fun ok(extra: JSONObject.() -> Unit = {}) = Response.json(JSONObject().put("ok", true).apply(extra))
 
     private fun onMain(block: () -> Unit) = main.post { try { block() } catch (e: Exception) { Log.w(TAG, "action", e) } }
+    /** Off the main thread (asks the TV over the network before acting). */
+    private fun bg(block: () -> Unit) = Thread { try { block() } catch (e: Exception) { Log.w(TAG, "action", e) } }.start()
 
     private fun goHome() = Router.openTarget(app, "home")
 
@@ -348,12 +350,12 @@ object ControlServer {
             }
             "sleep" -> { val m = a.optInt("minutes", 0).coerceIn(0, 600); Sleep.set(app, m); onMain { MainActivity.current?.settingsChanged() } }
             "off" -> onMain { Sleep.sleepNow(app) }
-            "on" -> onMain { WakeUp.wakeNow(app, "home", -1) }
+            "on" -> bg { WakeUp.wakeNow(app, "home", -1) }
             "tryMorning" -> {
                 // Run a morning now (today's plan, or the one sent) so you can hear it.
                 val m = ControlCore.morning(a.optJSONObject("plan")) ?: ControlCore.planFor(AppSettings.wake(), java.time.LocalDate.now(Config.ZONE))
                     ?: return Response.text("no plan", 400)
-                onMain { WakeUp.wakeNow(app, m.content, m.volume) }
+                bg { WakeUp.wakeNow(app, m.content, m.volume) }
             }
             else -> return Response.text("unknown action", 400)
         }

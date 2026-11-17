@@ -74,10 +74,12 @@ object WakeUp {
     fun wakeNow(ctx: Context, content: String, volume: Int) {
         val app = ctx.applicationContext
         if (app.getSystemService(PowerManager::class.java).isInteractive) {
-            // Already on: just do the volume and the channel.
+            // Box awake. If the TV itself is off (the box can outlast it), turn it on over Wi-Fi first.
+            if (SamsungTv.powerState(app) != "on") { SamsungTv.wake(app); Thread.sleep(4000) }
             setVolume(app, volume) { openAndPlay(app, content) }
             return
         }
+        Thread { SamsungTv.wake(app) }.start()   // alongside the box's own HDMI wake-up
         // From the phone: not a scheduled morning, so the 9:00 switch and 11:00 off don't apply to it.
         app.startActivity(Intent(app, WakeUpActivity::class.java).putExtra("channel", content).putExtra("volume", volume)
             .putExtra("scheduled", false)
@@ -158,9 +160,27 @@ class WakeUpReceiver : BroadcastReceiver() {
         when (intent.action) {
             WakeUp.ACTION_ON -> {
                 val channel = intent.getStringExtra("channel").orEmpty()
-                // TV already on: you're using it, leave it alone.
-                if (channel.isEmpty() || on) return
+                if (channel.isEmpty()) return
+                val volume = intent.getIntExtra("volume", -1)
+                if (on) {
+                    // The box is awake, but that doesn't mean the TV is: the box can stay awake after
+                    // the TV is turned off (Nov 16: it did, and the morning was skipped). Ask the TV.
+                    val done = goAsync()
+                    Thread {
+                        try {
+                            val state = SamsungTv.powerState(ctx)
+                            if (state == "on") { Log.i("JettWake", "TV already on: leaving it alone"); return@Thread }
+                            Log.i("JettWake", "Box awake but TV is ${state ?: "not answering"}: turning it on for $channel")
+                            SamsungTv.wake(ctx)
+                            ctx.startActivity(Intent(ctx, WakeUpActivity::class.java).putExtra("channel", channel)
+                                .putExtra("volume", volume).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION))
+                        } catch (e: Exception) { Log.w("JettWake", "Couldn't wake", e) } finally { done.finish() }
+                    }.start()
+                    return
+                }
                 Log.i("JettWake", "Waking for $channel")
+                // Also over Wi-Fi, in case the TV ignores the box's HDMI wake-up signal.
+                Thread { SamsungTv.wake(ctx) }.start()
                 try {
                     // Belt and braces: a screen wake lock also turns the box on where allowed.
                     @Suppress("DEPRECATION")

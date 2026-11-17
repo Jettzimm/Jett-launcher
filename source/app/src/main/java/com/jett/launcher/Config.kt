@@ -141,6 +141,8 @@ object Config {
     // Used until the update feed's "wakeUps" list has been read (see WakeUp.kt for the format).
     // The Samsung's address on the home network (found Nov 3, 2026); the box re-finds it if it changes.
     const val TV_IP = "192.168.1.169"
+    /** The Samsung's Wi-Fi address, for turning it on over the network (also learned from the TV). */
+    const val TV_MAC = "28:AF:42:0D:7B:46"
     const val WAKE_UPS_DEFAULT = """[{"days":"1-5","time":"08:00","channel":"youtube:FxAgAyZYXJ8","volume":15,"switchAt":"09:00","switchTo":"CNBC","switchVolume":10,"off":"11:00"}]"""
 
     // ------------------------------------------------------------- UPDATES

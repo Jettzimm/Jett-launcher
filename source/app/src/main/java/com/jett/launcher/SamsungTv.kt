@@ -182,6 +182,60 @@ object SamsungTv {
         }.get(25, TimeUnit.SECONDS)
     } catch (e: Exception) { false }
 
+    // ---------------------------------------------------------------- power (TV's own answer)
+
+    /** The TV's device info from its local API (port 8001), or null if it doesn't answer. */
+    private fun deviceInfo(ip: String): JSONObject? = try {
+        Socket().use { s ->
+            s.connect(InetSocketAddress(ip, 8001), 1500); s.soTimeout = 3000
+            s.getOutputStream().apply { write("GET /api/v2/ HTTP/1.1\r\nHost: $ip:8001\r\nConnection: close\r\n\r\n".toByteArray()); flush() }
+            val text = s.getInputStream().bufferedReader().readText()
+            JSONObject(text.substringAfter("\r\n\r\n")).optJSONObject("device")
+        }
+    } catch (e: Exception) { null }
+
+    /** All the addresses to ask, best first (the TV's power check works even in standby). */
+    private fun candidates(ctx: Context) =
+        listOfNotNull(prefs(ctx).getString("tvIpFound", null), prefs(ctx).getString("tvIp", null), Config.TV_IP).distinct()
+
+    /**
+     * "on", "standby", or null if the TV doesn't answer at all. This is the TV itself talking,
+     * unlike the box's own screen state (the box can stay awake after the TV is turned off).
+     * Also remembers the TV's Wi-Fi address for [wake].
+     */
+    fun powerState(ctx: Context): String? {
+        for (attempt in 0 until 3) {
+            for (ip in candidates(ctx)) {
+                val d = deviceInfo(ip) ?: continue
+                d.optString("wifiMac").takeIf { it.matches(Regex("([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")) }?.let {
+                    if (prefs(ctx).getString("tvMac", null) != it) prefs(ctx).edit().putString("tvMac", it).apply()
+                }
+                return d.optString("PowerState").ifEmpty { "on" }   // older answers have no field: it answered, so it's on
+            }
+            if (attempt < 2) Thread.sleep(1500)
+        }
+        return null
+    }
+
+    /** Turns the TV on over Wi-Fi (Wake-on-LAN: tested working on Jett's Q7F, Nov 2026). */
+    fun wake(ctx: Context) {
+        val mac = (prefs(ctx).getString("tvMac", null) ?: Config.TV_MAC).split(':').map { it.toInt(16).toByte() }.toByteArray()
+        val packet = ByteArray(6) { 0xFF.toByte() } + (1..16).flatMap { mac.toList() }
+        val subnet = Config.TV_IP.substringBeforeLast('.') + ".255"
+        try {
+            java.net.DatagramSocket().use { s ->
+                s.broadcast = true
+                repeat(3) {
+                    for (dst in listOf("255.255.255.255", subnet) + candidates(ctx)) for (port in listOf(9, 7)) try {
+                        s.send(java.net.DatagramPacket(packet, packet.size, java.net.InetAddress.getByName(dst), port))
+                    } catch (e: Exception) { }
+                    Thread.sleep(300)
+                }
+            }
+            Log.i(TAG, "Sent wake-up to the TV over Wi-Fi")
+        } catch (e: Exception) { Log.w(TAG, "Wi-Fi wake-up failed", e) }
+    }
+
     fun getMute(ip: String): Boolean? =
         soap(ip, "GetMute", "")?.let { Regex("<CurrentMute>(\\d)</CurrentMute>").find(it)?.groupValues?.get(1)?.let { v -> v == "1" } }
 
